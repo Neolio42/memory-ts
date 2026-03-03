@@ -1,44 +1,35 @@
 // ============================================================================
 // LOGGER - Beautiful console output for the memory system
-// Uses Node's built-in util.styleText for proper terminal support
+// Powered by @rlabs-inc/prism for terminal rendering
 // ============================================================================
 
-import { styleText } from 'util'
-
-type Style = Parameters<typeof styleText>[0]
-
-const style = (format: Style, text: string): string => styleText(format, text)
+import { s, log, box, table, badge, divider as prismDivider, kv, writeln } from '@rlabs-inc/prism'
 
 /**
  * Format a timestamp (HH:MM:SS)
  */
-function timestamp(): string {
-  return style('dim', new Date().toISOString().slice(11, 19))
+function ts(): string {
+  return s.dim(new Date().toISOString().slice(11, 19))
 }
 
 /**
  * Format a short session ID
  */
 function shortId(id: string): string {
-  return style('dim', id.slice(0, 8) + '...')
+  return s.dim(id.slice(0, 8) + '...')
 }
 
 /**
- * Symbols
+ * Emoji map for quick visual scanning of context types
  */
-const sym = {
-  brain: '🧠',
-  sparkles: '✨',
-  book: '📖',
-  calendar: '📅',
-  arrow: '→',
-  check: '✓',
-  cross: '✗',
-  warning: '⚠',
-  info: 'ℹ',
-  bullet: '•',
-  fire: '🔥',
-  target: '🎯',
+const emojiMap: Record<string, string> = {
+  breakthrough: '💡', decision: '⚖️', personal: '💜', technical: '🔧',
+  technical_state: '📍', unresolved: '❓', preference: '⚙️', workflow: '🔄',
+  architectural: '🏗️', debugging: '🐛', philosophy: '🌀', todo: '🎯',
+  implementation: '⚡', problem_solution: '✅', project_context: '📦',
+  milestone: '🏆', general: '📝', project_state: '📍', pending_task: '⏳',
+  work_in_progress: '🔨', system_feedback: '📣', project_milestone: '🏆',
+  architectural_insight: '🏛️', architectural_direction: '🧭',
 }
 
 /**
@@ -68,81 +59,79 @@ export const logger = {
    * Debug message (only shown in verbose mode)
    */
   debug(message: string, prefix?: string) {
-    if (_verbose) {
-      const pfx = prefix ? style('dim', `[${prefix}] `) : ''
-      console.log(`${style('dim', `🔍 ${pfx}${message}`)}`)
-    }
+    if (!_verbose) return
+    log.debug(prefix ? `[${prefix}] ${message}` : message)
   },
 
   /**
    * Info message
    */
   info(message: string) {
-    console.log(`${timestamp()} ${style('cyan', sym.info)} ${message}`)
+    log.info(message, { timestamp: true })
   },
 
   /**
    * Success message
    */
   success(message: string) {
-    console.log(`${timestamp()} ${style('green', sym.check)} ${message}`)
+    log.success(message, { timestamp: true })
   },
 
   /**
    * Warning message
    */
   warn(message: string) {
-    console.log(`${timestamp()} ${style('yellow', sym.warning)} ${message}`)
+    log.warn(message, { timestamp: true })
   },
 
   /**
    * Error message
    */
   error(message: string) {
-    console.error(`${timestamp()} ${style('red', sym.cross)} ${message}`)
+    log.error(message, { timestamp: true })
   },
 
   /**
    * Memory event (curation, storage)
    */
   memory(message: string) {
-    console.log(`${timestamp()} ${style('magenta', sym.brain)} ${message}`)
+    writeln(`${ts()} ${s.magenta('🧠')} ${message}`)
   },
 
   /**
    * Injection event (memories surfaced)
    */
   inject(message: string) {
-    console.log(`${timestamp()} ${style('cyan', sym.sparkles)} ${message}`)
+    writeln(`${ts()} ${s.cyan('✨')} ${message}`)
   },
 
   /**
    * Session event
    */
   session(message: string) {
-    console.log(`${timestamp()} ${style('blue', sym.calendar)} ${message}`)
+    writeln(`${ts()} ${s.blue('📅')} ${message}`)
   },
 
   /**
    * Primer shown
    */
   primer(message: string) {
-    console.log(`${timestamp()} ${style('yellow', sym.book)} ${message}`)
+    writeln(`${ts()} ${s.yellow('📖')} ${message}`)
   },
 
   /**
    * Divider line
    */
   divider() {
-    console.log(style('dim', '─'.repeat(60)))
+    writeln(prismDivider())
   },
 
   /**
    * Request received (incoming)
    */
   request(method: string, path: string, projectId?: string) {
-    const proj = projectId ? style('dim', ` [${projectId}]`) : ''
-    console.log(`${timestamp()} ${style('dim', sym.arrow)} ${style('cyan', method)} ${path}${proj}`)
+    const proj = projectId ? s.dim(` [${projectId}]`) : ''
+    writeln(`${ts()} ${s.dim('→')} ${s.cyan(method)} ${path}${proj}`)
   },
 
   /**
@@ -155,34 +144,34 @@ export const logger = {
     semantic_tags?: string[]
     action_required?: boolean
   }>) {
-    console.log()
-    console.log(`${timestamp()} ${style('magenta', sym.brain)} ${style(['bold', 'magenta'], `CURATED ${memories.length} MEMORIES`)}`)
-    console.log()
+    writeln()
+    writeln(`${ts()} ${s.magenta('🧠')} ${s.bold.magenta(`CURATED ${memories.length} MEMORIES`)}`)
+    writeln()
 
     memories.forEach((m, i) => {
-      const importance = style('yellow', `${(m.importance_weight * 100).toFixed(0)}%`)
-      const type = style('cyan', m.context_type.toUpperCase())
-      const num = style('dim', `${i + 1}.`)
+      const num = s.dim(`${i + 1}.`)
+      const type = badge(m.context_type.toUpperCase(), { color: s.cyan, variant: 'bracket' })
+      const importance = s.yellow(`${(m.importance_weight * 100).toFixed(0)}%`)
 
-      console.log(`   ${num} [${type}] ${importance}`)
+      writeln(`   ${num} ${type} ${importance}`)
 
-      // Content preview
-      const preview = m.content.length > 70
-        ? m.content.slice(0, 70) + style('dim', '...')
+      // Content: full in verbose, truncated in normal
+      const content = !_verbose && m.content.length > 70
+        ? m.content.slice(0, 70) + s.dim('...')
         : m.content
-      console.log(`      ${style('white', preview)}`)
+      writeln(`      ${content}`)
 
       // Tags
       if (m.semantic_tags?.length) {
-        const tags = m.semantic_tags.slice(0, 4).join(style('dim', ', '))
-        console.log(`      ${style('dim', 'tags:')} ${tags}`)
+        const tags = m.semantic_tags.slice(0, _verbose ? 8 : 4).join(s.dim(', '))
+        writeln(`      ${s.dim('tags:')} ${tags}`)
       }
 
       // Special flags
       if (m.action_required) {
-        console.log(`      ${style('red', '⚡ ACTION REQUIRED')}`)
+        writeln(`      ${s.red('⚡ ACTION REQUIRED')}`)
       }
-      console.log()
+      writeln()
     })
   },
 
@@ -194,88 +183,79 @@ export const logger = {
     score: number  // signals.count / 6
     context_type: string
   }>, query: string) {
-    const queryPreview = query.length > 40
+    const queryPreview = !_verbose && query.length > 40
       ? query.slice(0, 40) + '...'
       : query
 
-    // Emoji map for quick visual scanning
-    const emojiMap: Record<string, string> = {
-      breakthrough: '💡', decision: '⚖️', personal: '💜', technical: '🔧',
-      technical_state: '📍', unresolved: '❓', preference: '⚙️', workflow: '🔄',
-      architectural: '🏗️', debugging: '🐛', philosophy: '🌀', todo: '🎯',
-      implementation: '⚡', problem_solution: '✅', project_context: '📦',
-      milestone: '🏆', general: '📝', project_state: '📍', pending_task: '⏳',
-      work_in_progress: '🔨', system_feedback: '📣', project_milestone: '🏆',
-      architectural_insight: '🏛️', architectural_direction: '🧭',
-    }
-
-    console.log()
-    console.log(`${timestamp()} ${style('cyan', sym.sparkles)} ${style('bold', `SURFACING ${memories.length} MEMORIES`)}`)
-    console.log(`      ${style('dim', 'query:')} "${queryPreview}"`)
-    console.log()
+    writeln()
+    writeln(`${ts()} ${s.cyan('✨')} ${s.bold(`SURFACING ${memories.length} MEMORIES`)}`)
+    writeln(`      ${s.dim('query:')} "${queryPreview}"`)
+    writeln()
 
     if (memories.length === 0) {
-      console.log(`      ${style('dim', '(no relevant memories for this context)')}`)
-      console.log()
+      writeln(`      ${s.dim('(no relevant memories for this context)')}`)
+      writeln()
       return
     }
 
     memories.forEach((m, i) => {
-      // Convert score back to signal count (score is count/6)
       const signalCount = Math.round(m.score * 6)
-      const signalStr = style('green', `${signalCount}sig`)
+      const signalBadge = badge(`${signalCount}sig`, { color: s.green, variant: 'bracket' })
       const emoji = emojiMap[m.context_type?.toLowerCase()] ?? '📝'
-      const num = style('dim', `${i + 1}.`)
+      const num = s.dim(`${i + 1}.`)
 
-      const preview = m.content.length > 55
-        ? m.content.slice(0, 55) + style('dim', '...')
+      // Content: full in verbose, truncated in normal
+      const content = !_verbose && m.content.length > 55
+        ? m.content.slice(0, 55) + s.dim('...')
         : m.content
 
-      console.log(`   ${num} [${signalStr}] ${emoji}`)
-      console.log(`      ${preview}`)
+      writeln(`   ${num} ${signalBadge} ${emoji}`)
+      writeln(`      ${content}`)
     })
-    console.log()
+    writeln()
   },
 
   /**
    * Log server startup
    */
   startup(port: number, host: string, mode: string) {
-    console.log()
-    console.log(style(['bold', 'magenta'], '┌──────────────────────────────────────────────────────────┐'))
-    console.log(style(['bold', 'magenta'], '│') + style('bold', `  ${sym.brain} MEMORY SERVER                                        `) + style(['bold', 'magenta'], '│'))
-    console.log(style(['bold', 'magenta'], '└──────────────────────────────────────────────────────────┘'))
-    console.log()
-    console.log(`   ${style('dim', 'url:')}     ${style('cyan', `http://${host}:${port}`)}`)
-    console.log(`   ${style('dim', 'storage:')} ${mode}`)
-    console.log(`   ${style('dim', 'engine:')}  TypeScript + fsdb`)
-    console.log()
-    this.divider()
-    console.log()
+    const info = kv([
+      ['url', s.cyan(`http://${host}:${port}`)],
+      ['storage', mode],
+      ['engine', 'TypeScript + fsdb'],
+      ['verbose', _verbose ? s.green('on') : s.dim('off')],
+    ], { keyColor: s.dim, indent: 1 })
+
+    writeln()
+    writeln(box(info, {
+      border: 'double',
+      borderColor: 'magenta',
+      title: '🧠 Memory Server',
+      titleColor: s.bold,
+    }))
+    writeln()
   },
 
   /**
    * Log session start
    */
   logSessionStart(sessionId: string, projectId: string, isNew: boolean) {
-    const status = isNew
-      ? style('green', 'new session')
-      : style('blue', 'continuing')
+    const status = isNew ? s.green('new session') : s.blue('continuing')
 
-    console.log()
-    console.log(`${timestamp()} ${style('blue', sym.calendar)} ${style('bold', 'SESSION')} ${shortId(sessionId)}`)
-    console.log(`      ${style('dim', 'project:')} ${projectId}`)
-    console.log(`      ${style('dim', 'status:')} ${status}`)
-    console.log()
+    writeln()
+    writeln(`${ts()} ${s.blue('📅')} ${s.bold('SESSION')} ${shortId(sessionId)}`)
+    writeln(`      ${s.dim('project:')} ${projectId}`)
+    writeln(`      ${s.dim('status:')} ${status}`)
+    writeln()
   },
 
   /**
    * Log curation start
    */
   logCurationStart(sessionId: string, trigger: string) {
-    console.log()
-    console.log(`${timestamp()} ${style('magenta', sym.brain)} ${style('bold', 'CURATING')} ${shortId(sessionId)}`)
-    console.log(`      ${style('dim', 'trigger:')} ${trigger}`)
+    writeln()
+    writeln(`${ts()} ${s.magenta('🧠')} ${s.bold('CURATING')} ${shortId(sessionId)}`)
+    writeln(`      ${s.dim('trigger:')} ${trigger}`)
   },
 
   /**
@@ -283,31 +263,31 @@ export const logger = {
    */
   logCurationComplete(memoriesCount: number, summary?: string) {
     if (memoriesCount > 0) {
-      console.log(`      ${style('dim', 'memories:')} ${style('green', String(memoriesCount))} extracted`)
+      writeln(`      ${s.dim('memories:')} ${s.green(String(memoriesCount))} extracted`)
       if (summary) {
-        const shortSummary = summary.length > 50
+        const text = !_verbose && summary.length > 50
           ? summary.slice(0, 50) + '...'
           : summary
-        console.log(`      ${style('dim', 'summary:')} ${shortSummary}`)
+        writeln(`      ${s.dim('summary:')} ${text}`)
       }
     } else {
-      console.log(`      ${style('dim', 'result:')} no memories to extract`)
+      writeln(`      ${s.dim('result:')} no memories to extract`)
     }
-    console.log()
+    writeln()
   },
 
   /**
    * Log management agent starting
    */
   logManagementStart(memoriesCount: number) {
-    console.log(`${timestamp()} ${style('blue', '🔧')} ${style('bold', 'MANAGEMENT AGENT')}`)
-    console.log(`      ${style('dim', 'processing:')} ${memoriesCount} new memories`)
+    writeln(`${ts()} ${s.blue('🔧')} ${s.bold('MANAGEMENT AGENT')}`)
+    writeln(`      ${s.dim('processing:')} ${memoriesCount} new memories`)
   },
 
   /**
    * Log management agent results
-   * In verbose mode: shows all details beautifully formatted
-   * In normal mode: shows compact summary
+   * Verbose: full details beautifully formatted
+   * Normal: compact summary
    */
   logManagementComplete(result: {
     success: boolean
@@ -322,88 +302,75 @@ export const logger = {
     fullReport?: string
     error?: string
   }) {
-    // Helper to format action with icon
-    const formatAction = (action: string, truncate = true): string => {
-      let icon = '  •'
-      if (action.startsWith('READ OK')) icon = style('dim', '  📖')
-      else if (action.startsWith('READ FAILED')) icon = style('red', '  ❌')
-      else if (action.startsWith('WRITE OK')) icon = style('green', '  ✏️')
-      else if (action.startsWith('WRITE FAILED')) icon = style('red', '  ❌')
-      else if (action.startsWith('RECEIVED')) icon = style('cyan', '  📥')
-      else if (action.startsWith('CREATED')) icon = style('green', '  ✨')
-      else if (action.startsWith('UPDATED')) icon = style('blue', '  📝')
-      else if (action.startsWith('SUPERSEDED')) icon = style('yellow', '  🔄')
-      else if (action.startsWith('RESOLVED')) icon = style('green', '  ✅')
-      else if (action.startsWith('LINKED')) icon = style('cyan', '  🔗')
-      else if (action.startsWith('PRIMER')) icon = style('magenta', '  💜')
-      else if (action.startsWith('SKIPPED')) icon = style('dim', '  ⏭️')
-      else if (action.startsWith('NO_ACTION')) icon = style('dim', '  ◦')
-
-      const text = truncate && action.length > 70 ? action.slice(0, 67) + '...' : action
-      return `${icon} ${style('dim', text)}`
+    const actionIcon = (action: string): string => {
+      if (action.startsWith('READ OK')) return s.dim('📖')
+      if (action.startsWith('READ FAILED')) return s.red('❌')
+      if (action.startsWith('WRITE OK')) return s.green('✏️')
+      if (action.startsWith('WRITE FAILED')) return s.red('❌')
+      if (action.startsWith('RECEIVED')) return s.cyan('📥')
+      if (action.startsWith('CREATED')) return s.green('✨')
+      if (action.startsWith('UPDATED')) return s.blue('📝')
+      if (action.startsWith('SUPERSEDED')) return s.yellow('🔄')
+      if (action.startsWith('RESOLVED')) return s.green('✅')
+      if (action.startsWith('LINKED')) return s.cyan('🔗')
+      if (action.startsWith('PRIMER')) return s.magenta('💜')
+      if (action.startsWith('SKIPPED')) return s.dim('⏭️')
+      if (action.startsWith('NO_ACTION')) return s.dim('◦')
+      return '•'
     }
 
     if (result.success) {
-      console.log(`      ${style('green', sym.check)} ${style('bold', 'Completed')}`)
+      writeln(`      ${s.green('✓')} ${s.bold('Completed')}`)
 
       if (_verbose) {
-        // ═══════════════════════════════════════════════════════════════
-        // VERBOSE MODE: Show everything beautifully formatted
-        // ═══════════════════════════════════════════════════════════════
-
-        // File I/O stats section
-        console.log(`      ${style('dim', '─'.repeat(50))}`)
-        console.log(`      ${style('cyan', '📊')} ${style('bold', 'Statistics')}`)
-
+        // ── VERBOSE: Full details ──
         const filesRead = result.filesRead ?? 0
         const filesWritten = result.filesWritten ?? 0
-        console.log(`         ${style('dim', 'Files read:')}    ${filesRead > 0 ? style('green', String(filesRead)) : style('dim', '0')}`)
-        console.log(`         ${style('dim', 'Files written:')} ${filesWritten > 0 ? style('green', String(filesWritten)) : style('dim', '0')}`)
-
-        // Memory changes section
         const superseded = result.superseded ?? 0
         const resolved = result.resolved ?? 0
         const linked = result.linked ?? 0
-        console.log(`         ${style('dim', 'Superseded:')}    ${superseded > 0 ? style('yellow', String(superseded)) : style('dim', '0')}`)
-        console.log(`         ${style('dim', 'Resolved:')}      ${resolved > 0 ? style('green', String(resolved)) : style('dim', '0')}`)
-        console.log(`         ${style('dim', 'Linked:')}        ${linked > 0 ? style('cyan', String(linked)) : style('dim', '0')}`)
-        console.log(`         ${style('dim', 'Primer:')}        ${result.primerUpdated ? style('magenta', 'updated') : style('dim', 'unchanged')}`)
 
-        // Actions section - show ALL actions in verbose mode
+        writeln(`      ${s.dim('─'.repeat(50))}`)
+        writeln(`      ${s.cyan('📊')} ${s.bold('Statistics')}`)
+
+        const stats = kv([
+          ['Files read', filesRead > 0 ? s.green(String(filesRead)) : s.dim('0')],
+          ['Files written', filesWritten > 0 ? s.green(String(filesWritten)) : s.dim('0')],
+          ['Superseded', superseded > 0 ? s.yellow(String(superseded)) : s.dim('0')],
+          ['Resolved', resolved > 0 ? s.green(String(resolved)) : s.dim('0')],
+          ['Linked', linked > 0 ? s.cyan(String(linked)) : s.dim('0')],
+          ['Primer', result.primerUpdated ? s.magenta('updated') : s.dim('unchanged')],
+        ], { keyColor: s.dim, indent: 4 })
+        writeln(stats)
+
+        // Actions - no truncation in verbose
         if (result.actions && result.actions.length > 0) {
-          console.log(`      ${style('dim', '─'.repeat(50))}`)
-          console.log(`      ${style('cyan', '🎬')} ${style('bold', 'Actions')} ${style('dim', `(${result.actions.length} total)`)}`)
+          writeln(`      ${s.dim('─'.repeat(50))}`)
+          writeln(`      ${s.cyan('🎬')} ${s.bold('Actions')} ${s.dim(`(${result.actions.length} total)`)}`)
           for (const action of result.actions) {
-            console.log(`      ${formatAction(action, false)}`)  // No truncation in verbose
+            writeln(`        ${actionIcon(action)} ${s.dim(action)}`)
           }
         }
 
-        // Full report section
+        // Full report
         if (result.fullReport) {
-          console.log(`      ${style('dim', '─'.repeat(50))}`)
-          console.log(`      ${style('cyan', '📋')} ${style('bold', 'Full Report')}`)
-          const reportLines = result.fullReport.split('\n')
-          for (const line of reportLines) {
-            // Highlight section headers
+          writeln(`      ${s.dim('─'.repeat(50))}`)
+          writeln(`      ${s.cyan('📋')} ${s.bold('Full Report')}`)
+          for (const line of result.fullReport.split('\n')) {
             if (line.includes('===')) {
-              console.log(`         ${style('bold', line)}`)
+              writeln(`         ${s.bold(line)}`)
             } else if (line.match(/^[A-Z_]+:/)) {
-              // Highlight stat lines like "memories_processed: 5"
-              console.log(`         ${style('cyan', line)}`)
+              writeln(`         ${s.cyan(line)}`)
             } else {
-              console.log(`         ${style('dim', line)}`)
+              writeln(`         ${s.dim(line)}`)
             }
           }
         }
 
-        console.log(`      ${style('dim', '─'.repeat(50))}`)
+        writeln(`      ${s.dim('─'.repeat(50))}`)
 
       } else {
-        // ═══════════════════════════════════════════════════════════════
-        // NORMAL MODE: Compact summary
-        // ═══════════════════════════════════════════════════════════════
-
-        // Memory change stats (one line)
+        // ── NORMAL: Compact summary ──
         const stats: string[] = []
         if (result.superseded && result.superseded > 0) stats.push(`${result.superseded} superseded`)
         if (result.resolved && result.resolved > 0) stats.push(`${result.resolved} resolved`)
@@ -411,43 +378,39 @@ export const logger = {
         if (result.primerUpdated) stats.push('primer updated')
 
         if (stats.length > 0) {
-          console.log(`      ${style('dim', 'changes:')} ${stats.join(style('dim', ', '))}`)
+          writeln(`      ${s.dim('changes:')} ${stats.join(s.dim(', '))}`)
         } else {
-          console.log(`      ${style('dim', 'changes:')} none (memories are current)`)
+          writeln(`      ${s.dim('changes:')} none (memories are current)`)
         }
 
-        // Show limited actions
         if (result.actions && result.actions.length > 0) {
-          console.log(`      ${style('dim', 'actions:')}`)
+          writeln(`      ${s.dim('actions:')}`)
           for (const action of result.actions.slice(0, 10)) {
-            console.log(`      ${formatAction(action, true)}`)
+            const text = action.length > 70 ? action.slice(0, 67) + '...' : action
+            writeln(`        ${actionIcon(action)} ${s.dim(text)}`)
           }
           if (result.actions.length > 10) {
-            console.log(`      ${style('dim', `  ... and ${result.actions.length - 10} more actions`)}`)
+            writeln(`      ${s.dim(`  ... and ${result.actions.length - 10} more actions`)}`)
           }
         }
       }
 
     } else {
-      // ═══════════════════════════════════════════════════════════════
-      // ERROR: Always show error details
-      // ═══════════════════════════════════════════════════════════════
-      console.log(`      ${style('yellow', sym.warning)} ${style('bold', 'Failed')}`)
+      // ── ERROR: Always show details ──
+      writeln(`      ${s.yellow('⚠')} ${s.bold('Failed')}`)
       if (result.error) {
-        console.log(`      ${style('red', 'error:')} ${result.error}`)
+        writeln(`      ${s.red('error:')} ${result.error}`)
       }
 
-      // Show full report on error (always, for debugging)
       if (result.fullReport) {
-        console.log(`      ${style('dim', '─'.repeat(50))}`)
-        console.log(`      ${style('red', '📋')} ${style('bold', 'Error Report:')}`)
-        const reportLines = result.fullReport.split('\n')
-        for (const line of reportLines) {
-          console.log(`         ${style('dim', line)}`)
+        writeln(`      ${s.dim('─'.repeat(50))}`)
+        writeln(`      ${s.red('📋')} ${s.bold('Error Report:')}`)
+        for (const line of result.fullReport.split('\n')) {
+          writeln(`         ${s.dim(line)}`)
         }
       }
     }
-    console.log()
+    writeln()
   },
 
   /**
@@ -464,13 +427,12 @@ export const logger = {
     durationMs?: number
     selectedMemories: Array<{
       content: string
-      reasoning: string  // "Activated: trigger:67%, tags:2, content (3 signals)"
+      reasoning: string
       signalCount: number
       importance_weight: number
       context_type: string
       semantic_tags: string[]
       isGlobal: boolean
-      // Activation signals
       signals: {
         trigger: boolean
         triggerStrength: number
@@ -486,76 +448,114 @@ export const logger = {
   }) {
     const { totalMemories, currentMessage, alreadyInjected, preFiltered, globalCount, projectCount, finalCount, durationMs, selectedMemories } = params
 
-    const timeStr = durationMs !== undefined ? style('cyan', `${durationMs.toFixed(1)}ms`) : ''
+    const timeStr = durationMs !== undefined ? s.cyan(`${durationMs.toFixed(1)}ms`) : ''
 
-    console.log()
-    console.log(`${timestamp()} ${style('magenta', sym.brain)} ${style('bold', 'RETRIEVAL')} ${timeStr}`)
-    console.log(`      ${style('dim', 'total:')} ${totalMemories} → ${style('dim', 'filtered:')} ${preFiltered} → ${style('dim', 'candidates:')} ${totalMemories - preFiltered}`)
-    console.log(`      ${style('dim', 'already injected:')} ${alreadyInjected}`)
+    writeln()
+    writeln(`${ts()} ${s.magenta('🧠')} ${s.bold('RETRIEVAL')} ${timeStr}`)
 
-    const msgPreview = currentMessage.length > 60
-      ? currentMessage.slice(0, 60) + '...'
-      : currentMessage
-    console.log(`      ${style('dim', 'message:')} "${msgPreview}"`)
-    console.log()
+    // Pipeline summary
+    const pipeline = kv([
+      ['total', `${totalMemories} → ${s.dim('filtered:')} ${preFiltered} → ${s.dim('candidates:')} ${totalMemories - preFiltered}`],
+      ['already injected', String(alreadyInjected)],
+      ['message', `"${!_verbose && currentMessage.length > 60 ? currentMessage.slice(0, 60) + '...' : currentMessage}"`],
+    ], { keyColor: s.dim, indent: 3 })
+    writeln(pipeline)
+    writeln()
 
     // Selection summary
-    console.log(`      ${style('cyan', 'Global:')} ${globalCount} candidates → max 2 selected`)
-    console.log(`      ${style('cyan', 'Project:')} ${projectCount} candidates`)
-    console.log(`      ${style('green', 'Final:')} ${finalCount} memories selected`)
-    console.log()
+    writeln(`      ${s.cyan('Global:')} ${globalCount} candidates → max 2 selected`)
+    writeln(`      ${s.cyan('Project:')} ${projectCount} candidates`)
+    writeln(`      ${s.green('Final:')} ${finalCount} memories selected`)
+    writeln()
 
     if (selectedMemories.length === 0) {
-      console.log(`      ${style('dim', '📭 No relevant memories for this context')}`)
-      console.log()
+      writeln(`      ${s.dim('📭 No relevant memories for this context')}`)
+      writeln()
       return
     }
 
-    // Detailed breakdown
-    console.log(style('dim', '      ─'.repeat(30)))
-    console.log(`      ${style('bold', 'SELECTION DETAILS')}`)
-    console.log()
-
-    selectedMemories.forEach((m, i) => {
-      const num = style('dim', `${i + 1}.`)
-      const signalsStr = style('green', `${m.signalCount} signals`)
-      const imp = style('magenta', `imp:${(m.importance_weight * 100).toFixed(0)}%`)
-      const type = style('yellow', m.context_type.toUpperCase())
-      const scope = m.isGlobal ? style('blue', ' [G]') : ''
-
-      console.log(`   ${num} [${signalsStr} • ${imp}] ${type}${scope}`)
-
-      // Content preview
-      const preview = m.content.length > 60
-        ? m.content.slice(0, 60) + style('dim', '...')
-        : m.content
-      console.log(`      ${style('white', preview)}`)
-
-      // Show which signals fired with their strengths
-      const firedSignals: string[] = []
-      if (m.signals.trigger) {
-        firedSignals.push(`trigger:${(m.signals.triggerStrength * 100).toFixed(0)}%`)
-      }
-      if (m.signals.tags) {
-        firedSignals.push(`tags:${m.signals.tagCount}`)
-      }
-      if (m.signals.domain) firedSignals.push('domain')
-      if (m.signals.feature) firedSignals.push('feature')
-      if (m.signals.content) firedSignals.push('content')
-      if (m.signals.vector) {
-        firedSignals.push(`vector:${(m.signals.vectorSimilarity * 100).toFixed(0)}%`)
+    // ── Verbose: Table view ──
+    if (_verbose) {
+      const formatSignals = (sig: typeof selectedMemories[0]['signals']): string => {
+        const parts: string[] = []
+        if (sig.trigger) parts.push(`trig:${(sig.triggerStrength * 100).toFixed(0)}%`)
+        if (sig.tags) parts.push(`tags:${sig.tagCount}`)
+        if (sig.domain) parts.push('dom')
+        if (sig.feature) parts.push('feat')
+        if (sig.content) parts.push('content')
+        if (sig.vector) parts.push(`vec:${(sig.vectorSimilarity * 100).toFixed(0)}%`)
+        return parts.join(', ')
       }
 
-      if (firedSignals.length > 0) {
-        console.log(`      ${style('cyan', 'signals:')} ${firedSignals.join(', ')}`)
-      }
+      const rows = selectedMemories.map((m, i) => ({
+        '#': String(i + 1),
+        sig: String(m.signalCount),
+        imp: `${(m.importance_weight * 100).toFixed(0)}%`,
+        type: m.context_type.toUpperCase(),
+        scope: m.isGlobal ? 'G' : 'P',
+        signals: formatSignals(m.signals),
+      }))
 
-      console.log()
-    })
+      writeln(table(rows, {
+        columns: [
+          { key: '#', align: 'right' as const, width: 4 },
+          { key: 'sig', align: 'center' as const, width: 5 },
+          { key: 'imp', align: 'right' as const, width: 6 },
+          { key: 'type', label: 'type', minWidth: 12 },
+          { key: 'scope', align: 'center' as const, width: 7 },
+          { key: 'signals', minWidth: 20 },
+        ],
+        border: 'rounded',
+        borderColor: 'magenta',
+      }))
+      writeln()
+
+      // Full content for each memory in verbose
+      selectedMemories.forEach((m, i) => {
+        const emoji = emojiMap[m.context_type?.toLowerCase()] ?? '📝'
+        writeln(`      ${s.dim(`${i + 1}.`)} ${emoji} ${m.content}`)
+        writeln()
+      })
+
+    } else {
+      // ── Normal: Compact list ──
+      writeln(s.dim('      ─'.repeat(30)))
+      writeln(`      ${s.bold('SELECTION DETAILS')}`)
+      writeln()
+
+      selectedMemories.forEach((m, i) => {
+        const num = s.dim(`${i + 1}.`)
+        const signalsStr = s.green(`${m.signalCount} signals`)
+        const imp = s.magenta(`imp:${(m.importance_weight * 100).toFixed(0)}%`)
+        const type = s.yellow(m.context_type.toUpperCase())
+        const scope = m.isGlobal ? s.blue(' [G]') : ''
+
+        writeln(`   ${num} [${signalsStr} • ${imp}] ${type}${scope}`)
+
+        const preview = m.content.length > 60
+          ? m.content.slice(0, 60) + s.dim('...')
+          : m.content
+        writeln(`      ${preview}`)
+
+        // Signal details
+        const firedSignals: string[] = []
+        if (m.signals.trigger) firedSignals.push(`trigger:${(m.signals.triggerStrength * 100).toFixed(0)}%`)
+        if (m.signals.tags) firedSignals.push(`tags:${m.signals.tagCount}`)
+        if (m.signals.domain) firedSignals.push('domain')
+        if (m.signals.feature) firedSignals.push('feature')
+        if (m.signals.content) firedSignals.push('content')
+        if (m.signals.vector) firedSignals.push(`vector:${(m.signals.vectorSimilarity * 100).toFixed(0)}%`)
+
+        if (firedSignals.length > 0) {
+          writeln(`      ${s.cyan('signals:')} ${firedSignals.join(', ')}`)
+        }
+        writeln()
+      })
+    }
   },
 
   /**
-   * Log score distribution for diagnostics (supports both old and new algorithm)
+   * Log score distribution for diagnostics
    */
   logScoreDistribution(params: {
     totalCandidates: number
@@ -581,46 +581,74 @@ export const logger = {
   }) {
     const { totalCandidates, passedGatekeeper, rejectedByGatekeeper, buckets, stats, signalBreakdown } = params
 
-    console.log()
-    console.log(style('dim', '      ─'.repeat(30)))
-    console.log(`      ${style('bold', 'ACTIVATION SIGNALS')}`)
-    console.log()
+    writeln()
+    writeln(s.dim('      ─'.repeat(30)))
+    writeln(`      ${s.bold('ACTIVATION SIGNALS')}`)
+    writeln()
 
     // Gatekeeper stats
     const passRate = totalCandidates > 0 ? ((passedGatekeeper / totalCandidates) * 100).toFixed(0) : '0'
-    console.log(`      ${style('dim', 'Activated:')} ${style('green', String(passedGatekeeper))}/${totalCandidates} (${passRate}%)`)
-    console.log(`      ${style('dim', 'Rejected:')}  ${rejectedByGatekeeper} (< 2 signals)`)
-    console.log()
+    writeln(`      ${s.dim('Activated:')} ${s.green(String(passedGatekeeper))}/${totalCandidates} (${passRate}%)`)
+    writeln(`      ${s.dim('Rejected:')}  ${rejectedByGatekeeper} (< 2 signals)`)
+    writeln()
 
     // Signal breakdown
     if (signalBreakdown && signalBreakdown.total > 0) {
-      console.log(`      ${style('cyan', 'Signal Breakdown:')}`)
-      const signals = [
-        { name: 'trigger', count: signalBreakdown.trigger },
-        { name: 'tags', count: signalBreakdown.tags },
-        { name: 'domain', count: signalBreakdown.domain },
-        { name: 'feature', count: signalBreakdown.feature },
-        { name: 'content', count: signalBreakdown.content },
-        { name: 'files', count: signalBreakdown.files },
-        { name: 'vector', count: signalBreakdown.vector },
-      ]
-      for (const sig of signals) {
-        const pct = ((sig.count / signalBreakdown.total) * 100).toFixed(0)
-        const bar = '█'.repeat(Math.round(sig.count / signalBreakdown.total * 20))
-        console.log(`        ${sig.name.padEnd(8)} ${bar.padEnd(20)} ${sig.count} (${pct}%)`)
+      if (_verbose) {
+        // Verbose: table view
+        const signals = [
+          { signal: 'trigger', count: signalBreakdown.trigger },
+          { signal: 'tags', count: signalBreakdown.tags },
+          { signal: 'domain', count: signalBreakdown.domain },
+          { signal: 'feature', count: signalBreakdown.feature },
+          { signal: 'content', count: signalBreakdown.content },
+          { signal: 'files', count: signalBreakdown.files },
+          { signal: 'vector', count: signalBreakdown.vector },
+        ].filter(sig => sig.count > 0).map(sig => ({
+          signal: sig.signal,
+          count: String(sig.count),
+          pct: `${((sig.count / signalBreakdown.total) * 100).toFixed(0)}%`,
+        }))
+
+        writeln(table(signals, {
+          border: 'rounded',
+          borderColor: 'cyan',
+          columns: [
+            { key: 'signal', label: 'Signal' },
+            { key: 'count', label: 'Count', align: 'right' as const },
+            { key: 'pct', label: '%', align: 'right' as const },
+          ],
+        }))
+      } else {
+        // Normal: bar chart
+        writeln(`      ${s.cyan('Signal Breakdown:')}`)
+        const signals = [
+          { name: 'trigger', count: signalBreakdown.trigger },
+          { name: 'tags', count: signalBreakdown.tags },
+          { name: 'domain', count: signalBreakdown.domain },
+          { name: 'feature', count: signalBreakdown.feature },
+          { name: 'content', count: signalBreakdown.content },
+          { name: 'files', count: signalBreakdown.files },
+          { name: 'vector', count: signalBreakdown.vector },
+        ]
+        for (const sig of signals) {
+          const pct = ((sig.count / signalBreakdown.total) * 100).toFixed(0)
+          const bar = '█'.repeat(Math.round(sig.count / signalBreakdown.total * 20))
+          writeln(`        ${sig.name.padEnd(8)} ${bar.padEnd(20)} ${sig.count} (${pct}%)`)
+        }
       }
-      console.log()
+      writeln()
     }
 
     // Stats
     if (stats.max > 0) {
-      console.log(`      ${style('cyan', 'Signals:')} min=${stats.min} max=${stats.max} mean=${stats.mean}`)
-      console.log()
+      writeln(`      ${s.cyan('Signals:')} min=${stats.min} max=${stats.max} mean=${stats.mean}`)
+      writeln()
     }
 
     // Histogram by signal count
     if (Object.keys(buckets).length > 0) {
-      console.log(`      ${style('bold', 'Distribution:')}`)
+      writeln(`      ${s.bold('Distribution:')}`)
       const maxBucketCount = Math.max(...Object.values(buckets), 1)
       const bucketOrder = ['2 signals', '3 signals', '4 signals', '5 signals', '6 signals', '7 signals']
 
@@ -628,13 +656,36 @@ export const logger = {
         const count = buckets[bucket] ?? 0
         if (count > 0 || bucket === '2 signals') {
           const barLen = Math.round((count / maxBucketCount) * 25)
-          const bar = '█'.repeat(barLen) + style('dim', '░'.repeat(25 - barLen))
+          const bar = '█'.repeat(barLen) + s.dim('░'.repeat(25 - barLen))
           const countStr = count.toString().padStart(3)
-          console.log(`      ${style('dim', bucket.padEnd(10))} ${bar} ${style('cyan', countStr)}`)
+          writeln(`      ${s.dim(bucket.padEnd(10))} ${bar} ${s.cyan(countStr)}`)
         }
       }
-      console.log()
+      writeln()
     }
+  },
+
+  /**
+   * Log the full injected payload (verbose only)
+   * Shows exactly what gets sent to the AI's context
+   */
+  logInjectedPayload(payload: string, type: 'primer' | 'memories' | 'action_items', count?: number) {
+    if (!_verbose) return
+
+    const titles: Record<string, string> = {
+      primer: '📖 Injected Payload (Session Primer)',
+      memories: `✨ Injected Payload (${count ?? 0} memor${count === 1 ? 'y' : 'ies'})`,
+      action_items: `🎯 Injected Payload (${count ?? 0} action item${count === 1 ? '' : 's'})`,
+    }
+
+    writeln()
+    writeln(box(payload, {
+      border: 'rounded',
+      borderColor: 'cyan',
+      title: titles[type],
+      titleColor: s.bold,
+    }))
+    writeln()
   },
 }
 

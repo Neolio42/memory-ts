@@ -183,6 +183,15 @@ export async function createServer(config: ServerConfig = {}) {
             }
           }
 
+          // Verbose: show the full payload that gets injected into AI context
+          if (result.formatted) {
+            logger.logInjectedPayload(
+              result.formatted,
+              result.primer ? 'primer' : (mode === 'action_items' ? 'action_items' : 'memories'),
+              result.memories.length
+            )
+          }
+
           return Response.json({
             success: true,
             session_id: body.session_id,
@@ -359,6 +368,15 @@ export async function createServer(config: ServerConfig = {}) {
                         filesWritten: managementResult.filesWritten,
                       },
                     })
+
+                    // Notify @rlabs-inc/mind (fire-and-forget, never blocks memory pipeline)
+                    if (process.env.MEMORY_MIND_WEBHOOK_URL) {
+                      fetch(process.env.MEMORY_MIND_WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ projectId: body.project_id, sessionNumber, curationResult: result, managementResult }),
+                      }).catch(() => {})
+                    }
                   } catch (error) {
                     logger.error(`Management failed: ${error}`)
                   }
