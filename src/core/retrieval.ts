@@ -461,8 +461,8 @@ export class SmartVectorRetrieval {
       if (featureActivated) signalCount++
       if (contentActivated) signalCount++
       if (filesActivated) signalCount++
-      // Vector similarity as bonus signal only if very high
-      if (vectorSimilarity >= 0.40) signalCount++
+      // Vector similarity as signal if semantically close
+      if (vectorSimilarity >= 0.30) signalCount++
 
       const signals: ActivationSignals = {
         trigger: triggerResult.activated,
@@ -478,7 +478,9 @@ export class SmartVectorRetrieval {
       }
 
       // RELEVANCE GATE: Must have at least MIN_ACTIVATION_SIGNALS
-      if (signalCount < MIN_ACTIVATION_SIGNALS) {
+      // Exception: very strong vector similarity (>= 50%) can activate alone
+      const strongVector = vectorSimilarity >= 0.50
+      if (signalCount < MIN_ACTIVATION_SIGNALS && !strongVector) {
         rejectedCount++
         continue
       }
@@ -687,7 +689,7 @@ export class SmartVectorRetrieval {
           feature: item.signals.feature,
           content: item.signals.content,
           files: item.signals.files,
-          vector: item.signals.vectorSimilarity >= 0.40,
+          vector: item.signals.vectorSimilarity >= 0.30,
           vectorSimilarity: item.signals.vectorSimilarity,
         },
       })),
@@ -714,7 +716,7 @@ export class SmartVectorRetrieval {
     if (signals.feature) reasons.push('feature')
     if (signals.content) reasons.push('content')
     if (signals.files) reasons.push('files')
-    if (signals.vectorSimilarity >= 0.40) reasons.push(`vector:${(signals.vectorSimilarity * 100).toFixed(0)}%`)
+    if (signals.vectorSimilarity >= 0.30) reasons.push(`vector:${(signals.vectorSimilarity * 100).toFixed(0)}%`)
 
     return reasons.length
       ? `Activated: ${reasons.join(', ')} (${signals.count} signals)`
@@ -745,7 +747,7 @@ export class SmartVectorRetrieval {
       if (mem.signals.feature) featureCount++
       if (mem.signals.content) contentCount++
       if (mem.signals.files) filesCount++
-      if (mem.signals.vectorSimilarity >= 0.40) vectorCount++
+      if (mem.signals.vectorSimilarity >= 0.30) vectorCount++
     }
 
     logger.logScoreDistribution({
