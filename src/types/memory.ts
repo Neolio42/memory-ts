@@ -86,6 +86,8 @@ export interface CuratedMemory {
   related_files?: string[]                  // Source files for technical memories
   awaiting_implementation?: boolean         // Planned feature not yet built
   awaiting_decision?: boolean               // Decision point needing resolution
+  event_date?: string                       // ISO date (YYYY-MM-DD) when event occurred
+  supersedes?: string                       // ID of memory this replaces (short ID from existing memories list)
 }
 
 /**
@@ -133,6 +135,9 @@ export interface StoredMemory extends Omit<CuratedMemory, 'headline'> {
 
   // Retrieval control
   exclude_from_retrieval?: boolean
+
+  // Event tracking
+  event_date?: string                       // ISO date (YYYY-MM-DD) when event occurred
 
   // Schema version
   schema_version?: number

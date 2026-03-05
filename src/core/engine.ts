@@ -14,7 +14,7 @@ import type {
   SessionPrimer,
   CurationResult,
 } from '../types/memory.ts'
-import { getMemoryEmoji, MEMORY_TYPE_EMOJI } from '../types/memory.ts'
+import { getMemoryEmoji, MEMORY_TYPE_EMOJI, V4_DEFAULTS } from '../types/memory.ts'
 
 /**
  * Storage mode for memories
@@ -299,11 +299,12 @@ export class MemoryEngine {
     sessionId: string,
     result: CurationResult,
     projectPath?: string
-  ): Promise<{ memoriesStored: number }> {
+  ): Promise<{ memoriesStored: number; storedIds: string[] }> {
     const store = await this._getStore(projectId, projectPath)
     let memoriesStored = 0
+    const storedIds: string[] = []
 
-    // Store each memory
+    // Store each memory, routing global-scoped memories to global DB
     for (const memory of result.memories) {
       // Generate embedding if embedder available
       let embedding: Float32Array | undefined
@@ -311,8 +312,46 @@ export class MemoryEngine {
         embedding = await this._config.embedder(memory.content)
       }
 
-      await store.storeMemory(projectId, sessionId, memory, embedding)
+      // Determine effective scope: curator-provided or type-based default
+      const contextType = memory.context_type ?? 'technical'
+      const effectiveScope = memory.scope
+        ?? V4_DEFAULTS.typeDefaults[contextType]?.scope
+        ?? 'project'
+
+      let newId: string
+      if (effectiveScope === 'global') {
+        newId = await store.storeGlobalMemory(sessionId, memory, embedding)
+      } else {
+        newId = await store.storeMemory(projectId, sessionId, memory, embedding)
+      }
       memoriesStored++
+      storedIds.push(newId)
+
+      // Handle supersedes: mark old memory as superseded
+      if (memory.supersedes) {
+        const shortId = memory.supersedes.replace(/[\[\]#]/g, '').trim()
+        // Find the memory with matching short ID across project + global
+        const [projectMemories, globalMemories] = await Promise.all([
+          store.getAllMemories(projectId),
+          store.getGlobalMemories(),
+        ])
+        const allMemories = [...projectMemories, ...globalMemories]
+        const oldMemory = allMemories.find(m => m.id.endsWith(shortId))
+        if (oldMemory) {
+          const isGlobal = oldMemory.project_id === 'global'
+          if (isGlobal) {
+            await store.updateGlobalMemory(oldMemory.id, {
+              status: 'superseded',
+              superseded_by: newId,
+            })
+          } else {
+            await store.updateMemory(projectId, oldMemory.id, {
+              status: 'superseded',
+              superseded_by: newId,
+            })
+          }
+        }
+      }
     }
 
     // Store session summary
@@ -333,7 +372,7 @@ export class MemoryEngine {
     // Mark first session completed
     await store.markFirstSessionCompleted(projectId, sessionId)
 
-    return { memoriesStored }
+    return { memoriesStored, storedIds }
   }
 
   /**
@@ -361,7 +400,7 @@ export class MemoryEngine {
       store = this._stores.values().next().value
     } else {
       store = new MemoryStore(this._config.storageMode === 'local' ? {
-        basePath: join(this._config.projectPath ?? process.cwd(), '.memory'),
+        basePath: join(process.cwd(), this._config.localFolder),
       } : undefined)
     }
 
@@ -781,6 +820,52 @@ export class MemoryEngine {
       personalPrimerPath,
       storageMode: this._config.storageMode,
     }
+  }
+
+  /**
+   * Get the store for a project (used by manager for direct DB access)
+   */
+  async getStore(projectId: string, projectPath?: string): Promise<MemoryStore> {
+    return this._getStore(projectId, projectPath)
+  }
+
+  /**
+   * Build a compact summary of existing memories for the curator
+   * Groups by context_type, one line per memory: [SHORT_ID] (type) headline
+   */
+  async buildExistingMemoriesContext(projectId: string, projectPath?: string): Promise<string> {
+    const store = await this._getStore(projectId, projectPath)
+    const [projectMemories, globalMemories] = await Promise.all([
+      store.getAllMemories(projectId),
+      store.getGlobalMemories(),
+    ])
+
+    const allMemories = [...projectMemories, ...globalMemories]
+      .filter(m => !m.status || m.status === 'active')
+
+    if (allMemories.length === 0) return ''
+
+    // Group by context_type
+    const grouped = new Map<string, typeof allMemories>()
+    for (const m of allMemories) {
+      const type = m.context_type || 'technical'
+      if (!grouped.has(type)) grouped.set(type, [])
+      grouped.get(type)!.push(m)
+    }
+
+    const lines: string[] = []
+    for (const [type, memories] of grouped) {
+      lines.push(`### ${type} (${memories.length})`)
+      for (const m of memories) {
+        const shortId = m.id.slice(-6)
+        const display = m.headline || m.content.slice(0, 100)
+        const scope = m.project_id === 'global' ? ' [global]' : ''
+        lines.push(`- [#${shortId}]${scope} ${display}`)
+      }
+      lines.push('')
+    }
+
+    return lines.join('\n')
   }
 
   /**

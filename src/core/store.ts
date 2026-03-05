@@ -243,6 +243,7 @@ export class MemoryStore {
       awaiting_implementation: memory.awaiting_implementation ?? false,
       awaiting_decision: memory.awaiting_decision ?? false,
       exclude_from_retrieval: false,
+      event_date: memory.event_date ?? null,
       schema_version: MEMORY_SCHEMA_VERSION,
 
       // Relationship fields
@@ -519,6 +520,7 @@ export class MemoryStore {
       awaiting_implementation: memory.awaiting_implementation ?? false,
       awaiting_decision: memory.awaiting_decision ?? false,
       exclude_from_retrieval: false,
+      event_date: memory.event_date ?? null,
       schema_version: MEMORY_SCHEMA_VERSION,
 
       // Relationship fields
@@ -551,6 +553,8 @@ export class MemoryStore {
       awaiting_decision?: boolean
       semantic_tags?: string[]
       trigger_phrases?: string[]
+      superseded_by?: string
+      related_to?: string[]
     }
   ): Promise<{ success: boolean; updated_fields: string[] }> {
     const { memories } = await this.getProject(projectId)
@@ -601,6 +605,14 @@ export class MemoryStore {
       updateData.trigger_phrases = updates.trigger_phrases
       updatedFields.push('trigger_phrases')
     }
+    if (updates.superseded_by !== undefined) {
+      updateData.superseded_by = updates.superseded_by
+      updatedFields.push('superseded_by')
+    }
+    if (updates.related_to !== undefined) {
+      updateData.related_to = updates.related_to
+      updatedFields.push('related_to')
+    }
 
     if (updatedFields.length === 0) {
       return { success: true, updated_fields: [] }
@@ -610,6 +622,20 @@ export class MemoryStore {
     memories.update(memoryId, updateData)
 
     return { success: true, updated_fields: updatedFields }
+  }
+
+  /**
+   * Update a global memory's metadata fields
+   */
+  async updateGlobalMemory(
+    memoryId: string,
+    updates: Record<string, any>
+  ): Promise<{ success: boolean }> {
+    const { memories } = await this.getGlobal()
+    const existing = memories.get(memoryId)
+    if (!existing) return { success: false }
+    memories.update(memoryId, updates)
+    return { success: true }
   }
 
   /**
@@ -870,7 +896,7 @@ export class MemoryStore {
     const sorted = [...all].sort((a, b) => b.created - a.created)
 
     const latest = sorted[0]!
-    console.log(`   Latest summary: ${latest.summary.slice(0, 50)}...`)
+    logger.debug(`Latest summary: ${latest.summary.slice(0, 50)}...`, 'store')
 
     return {
       id: latest.id,

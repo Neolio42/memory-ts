@@ -1,7 +1,7 @@
 {
-  "name": "@rlabs-inc/memory",
-  "version": "0.6.0",
-  "description": "AI Memory System - Consciousness continuity through intelligent memory curation and retrieval",
+  "name": "@neolio42/memory",
+  "version": "0.7.0",
+  "description": "AI Memory System - Context continuity for Claude Code and Gemini CLI sessions",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -59,10 +59,10 @@
     "embeddings",
     "vector-search"
   ],
-  "author": "RLabs Inc",
+  "author": "Neolio42",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RLabs-Inc/memory-ts.git"
+    "url": "https://github.com/Neolio42/memory-ts.git"
   }
 }

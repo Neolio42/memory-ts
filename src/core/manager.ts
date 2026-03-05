@@ -1,22 +1,14 @@
 // ============================================================================
-// MEMORY MANAGER - Post-curation memory lifecycle management
-// Spawns a management agent to update, supersede, and organize memories
-// Mirrors Curator pattern exactly
+// MEMORY MANAGER - Deterministic post-curation deduplication
+// No LLM calls - fast, reliable rules-based cleanup
 // ============================================================================
 
-import { join } from "path";
-import { homedir } from "os";
-import { existsSync } from "fs";
-import type { CurationResult } from "../types/memory.ts";
+import type { StoredMemory } from "../types/memory.ts";
 import { logger } from "../utils/logger.ts";
-import {
-  getClaudeCommand,
-  getManagerPromptPath,
-  getManagerCwd,
-  getCentralStoragePath,
-  getStorageMode,
-  type StoragePaths,
-} from "../utils/paths.ts";
+import type { MemoryStore } from "./store.ts";
+
+// Re-export StoragePaths for backwards compatibility
+export type { StoragePaths } from "../utils/paths.ts";
 
 /**
  * Manager configuration
@@ -28,26 +20,10 @@ export interface ManagerConfig {
    * Default: true
    */
   enabled?: boolean;
-
-  /**
-   * CLI command to use (for subprocess mode)
-   * Default: auto-detected (~/.claude/local/claude or 'claude')
-   */
-  cliCommand?: string;
-
-  /**
-   * Maximum turns for the management agent
-   * Set to undefined for unlimited turns
-   * Default: undefined (unlimited)
-   */
-  maxTurns?: number;
 }
 
-// Re-export StoragePaths for backwards compatibility
-export type { StoragePaths } from "../utils/paths.ts";
-
 /**
- * Management result - what the agent did
+ * Management result - what the manager did
  */
 export interface ManagementResult {
   success: boolean;
@@ -57,677 +33,205 @@ export interface ManagementResult {
   filesRead: number;
   filesWritten: number;
   primerUpdated: boolean;
-  actions: string[]; // Detailed action log lines
-  summary: string; // Brief summary for storage
-  fullReport: string; // Complete management report (ACTIONS + SUMMARY sections)
+  actions: string[];
+  summary: string;
+  fullReport: string;
   error?: string;
 }
 
 /**
- * Memory Manager - Updates and organizes memories after curation
- * Mirrors Curator class structure
+ * Calculate word overlap ratio between two strings
+ * Returns 0-1 where 1 means all words match
+ */
+function wordOverlap(a: string, b: string): number {
+  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+  let overlap = 0;
+  for (const word of wordsA) {
+    if (wordsB.has(word)) overlap++;
+  }
+
+  const smaller = Math.min(wordsA.size, wordsB.size);
+  return overlap / smaller;
+}
+
+/**
+ * Count shared tags between two memories
+ */
+function sharedTagCount(a: StoredMemory, b: StoredMemory): number {
+  const tagsA = new Set((a.semantic_tags || []).map(t => t.toLowerCase()));
+  const tagsB = new Set((b.semantic_tags || []).map(t => t.toLowerCase()));
+  let count = 0;
+  for (const tag of tagsA) {
+    if (tagsB.has(tag)) count++;
+  }
+  return count;
+}
+
+/**
+ * Memory Manager - Deterministic deduplication and linking
  */
 export class Manager {
-  private _config: {
-    enabled: boolean;
-    cliCommand: string;
-    maxTurns?: number; // undefined = unlimited
-  };
+  private _config: { enabled: boolean };
 
   constructor(config: ManagerConfig = {}) {
     this._config = {
       enabled: config.enabled ?? true,
-      cliCommand: config.cliCommand ?? getClaudeCommand(),
-      maxTurns: config.maxTurns, // undefined = unlimited turns
     };
   }
 
   /**
-   * Build the management prompt
-   * Loads from skills file
+   * Run deterministic dedup and linking on all active memories
+   *
+   * Rules:
+   * 1. Same domain + feature + >80% headline overlap → supersede older
+   * 2. Same context_type='state' for same project → supersede older (state is always latest)
+   * 3. 3+ shared semantic tags → link via related_to
    */
-  async buildManagementPrompt(): Promise<string | null> {
-    const skillPaths = [
-      // Development - relative to src/core
-      join(import.meta.dir, "../../skills/memory-management.md"),
-      // Installed via bun global
-      join(
-        homedir(),
-        ".bun/install/global/node_modules/@rlabs-inc/memory/skills/memory-management.md",
-      ),
-      // Installed via npm global
-      join(
-        homedir(),
-        ".npm/global/node_modules/@rlabs-inc/memory/skills/memory-management.md",
-      ),
-      // Local node_modules
-      join(
-        process.cwd(),
-        "node_modules/@rlabs-inc/memory/skills/memory-management.md",
-      ),
-    ];
-
-    for (const path of skillPaths) {
-      try {
-        const content = await Bun.file(path).text();
-        if (content) return content;
-      } catch {
-        continue;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Build the user message with curation data
-   * Includes actual storage paths resolved at runtime
-   */
-  buildUserMessage(
+  async manage(
+    store: MemoryStore,
     projectId: string,
-    sessionNumber: number,
-    result: CurationResult,
-    storagePaths?: StoragePaths,
-  ): string {
-    const today = new Date().toISOString().split("T")[0];
-
-    // Build storage paths section if provided
-    // Includes both root paths (for permissions context) and memories paths (for file operations)
-    const pathsSection = storagePaths
-      ? `
-## Storage Paths (ACTUAL - use these exact paths)
-
-**Storage Mode:** ${storagePaths.storageMode}
-
-### Project Storage
-- **Project Root:** ${storagePaths.projectPath}
-- **Project Memories:** ${storagePaths.projectMemoriesPath}
-
-### Global Storage (shared across all projects)
-- **Global Root:** ${storagePaths.globalPath}
-- **Global Memories:** ${storagePaths.globalMemoriesPath}
-- **Personal Primer:** ${storagePaths.personalPrimerPath}
-
-> ⚠️ These paths are resolved from the running server configuration. Use them exactly as provided.
-> Memories are stored as individual markdown files in the memories directories.
-`
-      : "";
-
-    return `## Curation Data
-
-**Project ID:** ${projectId}
-**Session Number:** ${sessionNumber}
-**Date:** ${today}
-${pathsSection}
-### Session Summary
-${result.session_summary || "No summary provided"}
-
-### Project Snapshot
-${result.project_snapshot
-        ? `
-- Current Phase: ${result.project_snapshot.current_phase || "N/A"}
-- Recent Achievements: ${result.project_snapshot.recent_achievements?.join(", ") || "None"}
-- Active Challenges: ${result.project_snapshot.active_challenges?.join(", ") || "None"}
-- Next Steps: ${result.project_snapshot.next_steps?.join(", ") || "None"}
-`
-        : "No snapshot provided"
-      }
-
-### New Memories (${result.memories.length})
-${result.memories
-        .map(
-          (m, i) => `
-#### Memory ${i + 1}
-- **Content:** ${m.content}
-- **Type:** ${m.context_type}
-- **Scope:** ${m.scope || "project"}
-- **Domain:** ${m.domain || "N/A"}
-- **Importance:** ${m.importance_weight}
-- **Tags:** ${m.semantic_tags?.join(", ") || "None"}
-`,
-        )
-        .join("\n")}
-
----
-
-Please process these memories according to your management procedure. Use the exact storage paths provided above to read and write memory files. Update, supersede, or link existing memories as needed. Update the personal primer if any personal memories warrant it.`;
-  }
-
-  /**
-   * Manage using Claude Agent SDK (no API key needed - uses Claude Code OAuth)
-   * Use this for ingest command - cleaner than CLI subprocess
-   */
-  async manageWithSDK(
-    projectId: string,
-    sessionNumber: number,
-    result: CurationResult,
-    storagePaths?: StoragePaths,
+    newMemoryIds: string[],
   ): Promise<ManagementResult> {
-    // Skip if disabled via config or env var
     if (!this._config.enabled || process.env.MEMORY_MANAGER_DISABLED === "1") {
       return {
-        success: true,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "Management agent disabled",
-        fullReport: "Management agent disabled via configuration",
+        success: true, superseded: 0, resolved: 0, linked: 0,
+        filesRead: 0, filesWritten: 0, primerUpdated: false,
+        actions: [], summary: "Manager disabled", fullReport: "Manager disabled",
       };
     }
 
-    // Skip if no memories
-    if (result.memories.length === 0) {
+    if (newMemoryIds.length === 0) {
       return {
-        success: true,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "No memories to process",
-        fullReport: "No memories to process - skipped",
+        success: true, superseded: 0, resolved: 0, linked: 0,
+        filesRead: 0, filesWritten: 0, primerUpdated: false,
+        actions: [], summary: "No new memories", fullReport: "No new memories to process",
       };
     }
 
-    // Load skill file
-    const systemPrompt = await this.buildManagementPrompt();
-    if (!systemPrompt) {
-      return {
-        success: false,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "",
-        fullReport: "Error: Management skill file not found",
-        error: "Management skill not found",
-      };
-    }
-
-    const userMessage = this.buildUserMessage(
-      projectId,
-      sessionNumber,
-      result,
-      storagePaths,
-    );
-
-    try {
-      // Dynamic import to make Agent SDK optional
-      const { query } = await import("@anthropic-ai/claude-agent-sdk");
-
-      // Build allowed directories for file access
-      const globalPath =
-        storagePaths?.globalPath ?? join(getCentralStoragePath(), "global");
-      const projectPath = storagePaths?.projectPath ?? getCentralStoragePath();
-
-      // Use Agent SDK with file tools
-      const q = query({
-        prompt: userMessage,
-        options: {
-          systemPrompt,
-          permissionMode: "bypassPermissions",
-          model: "claude-opus-4-5-20251101",
-          // Only allow file tools - no Bash, no web
-          allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
-          // Allow access to memory directories
-          additionalDirectories: [globalPath, projectPath],
-          // Limit turns if configured
-          maxTurns: this._config.maxTurns,
-        },
-      });
-
-      // Iterate through the async generator to get the result
-      let resultText = "";
-      for await (const msg of q) {
-        if (msg.type === "result" && "result" in msg) {
-          resultText = msg.result;
-          break;
-        }
-      }
-
-      if (!resultText) {
-        return {
-          success: true,
-          superseded: 0,
-          resolved: 0,
-          linked: 0,
-          filesRead: 0,
-          filesWritten: 0,
-          primerUpdated: false,
-          actions: [],
-          summary: "No result from management agent",
-          fullReport: "Management agent completed but returned no result",
-        };
-      }
-
-      return this._parseSDKManagementResult(resultText);
-    } catch (error: any) {
-      return {
-        success: false,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "",
-        fullReport: `Manager Claude - Error: Agent SDK failed: ${error.message}`,
-        error: error.message,
-      };
-    }
-  }
-
-  /**
-   * Parse management result from Agent SDK response
-   * Similar to parseManagementResponse but for SDK output format
-   */
-  private _parseSDKManagementResult(resultText: string): ManagementResult {
-    // Extract actions section
-    const actionsMatch = resultText.match(
-      /=== MANAGEMENT ACTIONS ===([\s\S]*?)(?:=== SUMMARY ===|$)/,
-    );
     const actions: string[] = [];
-    if (actionsMatch) {
-      const actionsText = actionsMatch[1];
-      const actionLines = actionsText
-        .split("\n")
-        .map((line: string) => line.trim())
-        .filter((line: string) =>
-          /^(READ|WRITE|RECEIVED|CREATED|UPDATED|SUPERSEDED|RESOLVED|LINKED|PRIMER|SKIPPED|NO_ACTION)/.test(
-            line,
-          ),
-        );
-      actions.push(...actionLines);
-    }
-
-    // Extract the full report
-    const reportMatch = resultText.match(/(=== MANAGEMENT ACTIONS ===[\s\S]*)/);
-    const fullReport = reportMatch ? reportMatch[1].trim() : resultText;
-
-    // Extract stats from result text
-    const supersededMatch =
-      resultText.match(/memories_superseded[:\s]+(\d+)/i) ||
-      resultText.match(/superseded[:\s]+(\d+)/i);
-    const resolvedMatch =
-      resultText.match(/memories_resolved[:\s]+(\d+)/i) ||
-      resultText.match(/resolved[:\s]+(\d+)/i);
-    const linkedMatch =
-      resultText.match(/memories_linked[:\s]+(\d+)/i) ||
-      resultText.match(/linked[:\s]+(\d+)/i);
-    const filesReadMatch = resultText.match(/files_read[:\s]+(\d+)/i);
-    const filesWrittenMatch = resultText.match(/files_written[:\s]+(\d+)/i);
-    const primerUpdated =
-      /primer_updated[:\s]+true/i.test(resultText) ||
-      /PRIMER\s+OK/i.test(resultText);
-
-    // Count file operations from actions if not in summary
-    const readActions = actions.filter((a: string) =>
-      a.startsWith("READ OK"),
-    ).length;
-    const writeActions = actions.filter((a: string) =>
-      a.startsWith("WRITE OK"),
-    ).length;
-
-    return {
-      success: true,
-      superseded: supersededMatch ? parseInt(supersededMatch[1]) : 0,
-      resolved: resolvedMatch ? parseInt(resolvedMatch[1]) : 0,
-      linked: linkedMatch ? parseInt(linkedMatch[1]) : 0,
-      filesRead: filesReadMatch ? parseInt(filesReadMatch[1]) : readActions,
-      filesWritten: filesWrittenMatch
-        ? parseInt(filesWrittenMatch[1])
-        : writeActions,
-      primerUpdated,
-      actions,
-      summary: resultText.slice(0, 500),
-      fullReport,
-    };
-  }
-
-  /**
-   * Manage using Gemini CLI (for Gemini-only users)
-   * Uses --prompt + --output-format json combo (no --resume needed for manager)
-   * System prompt injected via GEMINI_SYSTEM_MD environment variable
-   */
-  async manageWithGeminiCLI(
-    projectId: string,
-    sessionNumber: number,
-    result: CurationResult,
-    storagePaths?: StoragePaths,
-    apiKey?: string,
-  ): Promise<ManagementResult> {
-    // Skip if disabled via config or env var
-    if (!this._config.enabled || process.env.MEMORY_MANAGER_DISABLED === "1") {
-      return {
-        success: true,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "Manager Gemini - Management agent disabled",
-        fullReport: "Management agent disabled via configuration",
-      };
-    }
-
-    // Skip if no memories
-    if (result.memories.length === 0) {
-      return {
-        success: true,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "Manager Gemini - No memories to process",
-        fullReport: "No memories to process - skipped",
-      };
-    }
-
-    // Load skill file
-    const systemPrompt = await this.buildManagementPrompt();
-    if (!systemPrompt) {
-      return {
-        success: false,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "",
-        fullReport:
-          "Manager Gemini - Error: Management skill not file not found",
-        error: "Management skill not found",
-      };
-    }
-
-    const userMessage = this.buildUserMessage(
-      projectId,
-      sessionNumber,
-      result,
-      storagePaths,
-    );
-
-    // Resolve paths using centralized utilities
-    const managerCwd = getManagerCwd(storagePaths);
-    const projectPath =
-      storagePaths?.projectPath ?? join(getCentralStoragePath(), projectId);
-    const globalPath =
-      storagePaths?.globalPath ?? join(getCentralStoragePath(), "global");
-
-    // Write system prompt to temp file (tmpdir always exists)
-    const geminiSystemPrompt = `${systemPrompt}
-
-## Available Tools
-
-You have access to the following tools to manage memory files:
-
-\${AvailableTools}
-
-Use these tools to read existing memories, write updates, and manage the memory filesystem.
-`;
-    const tempPromptPath = getManagerPromptPath();
-    await Bun.write(tempPromptPath, geminiSystemPrompt);
-
-    // Copy user's Gemini settings to managerCwd with hooks disabled
-    // This prevents the manager's session from triggering hooks recursively
-    const userSettingsPath = join(homedir(), ".gemini", "settings.json");
-    const managerSettingsDir = join(managerCwd, ".gemini");
-    const managerSettingsPath = join(managerSettingsDir, "settings.json");
+    let supersededCount = 0;
+    let linkedCount = 0;
 
     try {
-      // Disable memory hooks to prevent recursive curation
-      // Format: hooks.disabled array with hook command names
-      const settings = {
-        hooks: {
-          disabled: [
-            "inject-memories",
-            "load-session-primer",
-            "curate-memories",
-            "curate-memories",
-          ],
-        },
-        hooksConfig: {
-          enabled: false,
-        },
-      };
+      // Load all active memories
+      const [projectMemories, globalMemories] = await Promise.all([
+        store.getAllMemories(projectId),
+        store.getGlobalMemories(),
+      ]);
+      const allMemories = [...projectMemories, ...globalMemories]
+        .filter(m => !m.status || m.status === "active");
 
-      // Ensure .gemini directory exists in managerCwd
-      if (!existsSync(managerSettingsDir)) {
-        const { mkdirSync } = await import("fs");
-        mkdirSync(managerSettingsDir, { recursive: true });
-      }
+      const newMemories = allMemories.filter(m => newMemoryIds.includes(m.id));
+      const existingMemories = allMemories.filter(m => !newMemoryIds.includes(m.id));
 
-      await Bun.write(managerSettingsPath, JSON.stringify(settings, null, 2));
       logger.debug(
-        `Manager Gemini: Created settings with hooks disabled at ${managerSettingsPath}`,
+        `Manager: ${newMemories.length} new, ${existingMemories.length} existing active memories`,
         "manager",
       );
-    } catch (err: any) {
-      logger.debug(
-        `Manager Gemini: Could not create settings file: ${err.message}`,
-        "manager",
-      );
-    }
 
-    logger.debug(
-      `Manager Gemini - Starting management for project ${projectId}`,
-      "manager",
-    );
-    logger.debug(
-      `Manager Gemini - Processing ${result.memories.length} memories`,
-      "manager",
-    );
-    logger.debug(
-      `Manager Gemini - Storage mode: ${getStorageMode(storagePaths)}, cwd: ${managerCwd}`,
-      "manager",
-    );
+      // Rule 1: Dedup by domain + feature + headline overlap
+      for (const newMem of newMemories) {
+        if (!newMem.domain || !newMem.feature) continue;
 
-    // Build CLI command
-    // - cwd gives write access to that tree
-    // - --include-directories adds read access to other paths
-    const args = [
-      "-p",
-      userMessage,
-      "--output-format",
-      "json",
-      "--yolo", // Auto-approve file operations
-      "--include-directories",
-      projectPath,
-      "--include-directories",
-      globalPath,
-    ];
+        for (const existing of existingMemories) {
+          if (existing.domain !== newMem.domain) continue;
+          if (existing.feature !== newMem.feature) continue;
 
-    logger.debug(
-      `Manager Gemini: Spawning gemini CLI from ${managerCwd}`,
-      "manager",
-    );
+          // Check headline overlap
+          const newHeadline = newMem.headline || newMem.content.slice(0, 100);
+          const existingHeadline = existing.headline || existing.content.slice(0, 100);
+          const overlap = wordOverlap(newHeadline, existingHeadline);
 
-    // Execute CLI with system prompt via environment variable
-    // cwd determines write access, --include-directories adds read access
-    const proc = Bun.spawn(["gemini", ...args], {
-      cwd: managerCwd,
-      env: {
-        ...process.env,
-        MEMORY_CURATOR_ACTIVE: "1", // Prevent recursive hook triggering
-        GEMINI_SYSTEM_MD: tempPromptPath, // Inject our management prompt
-        ...(apiKey ? { GEMINI_API_KEY: apiKey } : {}),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    // Capture output
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
-
-    logger.debug(`Manager Gemini - Exit code ${exitCode}`, "manager");
-    if (stderr && stderr.trim()) {
-      logger.debug(`Manager Gemini - stderr: ${stderr}`, "manager");
-    }
-
-    if (exitCode !== 0) {
-      logger.debug(
-        `Manager Gemini - Failed with exit code ${exitCode}`,
-        "manager",
-      );
-      const errorMsg = stderr || `Exit code ${exitCode}`;
-      return {
-        success: false,
-        superseded: 0,
-        resolved: 0,
-        linked: 0,
-        filesRead: 0,
-        filesWritten: 0,
-        primerUpdated: false,
-        actions: [],
-        summary: "",
-        fullReport: `Manager Gemini - Error: Gemini CLI failed with exit code ${exitCode}\n${stderr}`,
-        error: errorMsg,
-      };
-    }
-
-    // Parse Gemini JSON output
-    // Note: Gemini CLI outputs log messages before AND after the JSON
-    // We need to extract just the JSON object
-    logger.debug(
-      `Manager Gemini - Parsing response (${stdout.length} chars)`,
-      "manager",
-    );
-    try {
-      // Find the JSON object - it starts with { and we need to find the matching }
-      const jsonStart = stdout.indexOf("{");
-      if (jsonStart === -1) {
-        logger.debug(
-          "Manager Gemini - No JSON object found in output",
-          "manager",
-        );
-        // logger.debug(
-        //   `Manager Gemini - Raw stdout: ${stdout.slice(0, 500)}`,
-        //   "manager",
-        // );
-        return {
-          success: false,
-          superseded: 0,
-          resolved: 0,
-          linked: 0,
-          filesRead: 0,
-          filesWritten: 0,
-          primerUpdated: false,
-          actions: [],
-          summary: "Manager Gemini - No JSON in Gemini response",
-          fullReport:
-            "Manager Gemini - Failed: No JSON object in Gemini CLI output",
-        };
-      }
-
-      // Find the matching closing brace by counting braces
-      let braceCount = 0;
-      let jsonEnd = -1;
-      for (let i = jsonStart; i < stdout.length; i++) {
-        if (stdout[i] === "{") braceCount++;
-        if (stdout[i] === "}") braceCount--;
-        if (braceCount === 0) {
-          jsonEnd = i + 1;
-          break;
+          if (overlap >= 0.8) {
+            // Supersede the older memory
+            const isGlobal = existing.project_id === "global";
+            if (isGlobal) {
+              await store.updateGlobalMemory(existing.id, {
+                status: "superseded",
+                superseded_by: newMem.id,
+              });
+            } else {
+              await store.updateMemory(projectId, existing.id, {
+                status: "superseded",
+                superseded_by: newMem.id,
+              });
+            }
+            supersededCount++;
+            actions.push(
+              `SUPERSEDED ${existing.id.slice(-6)} by ${newMem.id.slice(-6)} (domain=${newMem.domain}, feature=${newMem.feature}, overlap=${(overlap * 100).toFixed(0)}%)`,
+            );
+          }
         }
       }
 
-      if (jsonEnd === -1) {
-        logger.debug(
-          "Manager Gemini - Could not find matching closing brace",
-          "manager",
-        );
-        return {
-          success: false,
-          superseded: 0,
-          resolved: 0,
-          linked: 0,
-          filesRead: 0,
-          filesWritten: 0,
-          primerUpdated: false,
-          actions: [],
-          summary: "Manager Gemini - Incomplete JSON in Gemini response",
-          fullReport:
-            "Manager Gemini - Failed: Could not find complete JSON object",
-        };
+      // Rule 2: State memories — only keep the latest per project
+      const stateMemories = allMemories.filter(
+        m => m.context_type === "state" && m.project_id === projectId,
+      );
+      if (stateMemories.length > 1) {
+        // Sort by created_at desc, keep newest
+        const sorted = stateMemories.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+        for (let i = 1; i < sorted.length; i++) {
+          const older = sorted[i]!;
+          await store.updateMemory(projectId, older.id, { status: "superseded" });
+          supersededCount++;
+          actions.push(
+            `SUPERSEDED ${older.id.slice(-6)} (older state memory, keeping ${sorted[0]!.id.slice(-6)})`,
+          );
+        }
       }
 
-      const jsonStr = stdout.slice(jsonStart, jsonEnd);
-      logger.debug(
-        `Manager Gemini - Extracted JSON (${jsonStr.length} chars)`,
-        "manager",
-      );
-
-      const geminiOutput = JSON.parse(jsonStr);
-
-      // Gemini returns { response: "...", stats: {...} }
-      const aiResponse = geminiOutput.response || "";
-
-      if (!aiResponse) {
-        logger.debug("Manager Gemini - No response field in output", "manager");
-        return {
-          success: true,
-          superseded: 0,
-          resolved: 0,
-          linked: 0,
-          filesRead: 0,
-          filesWritten: 0,
-          primerUpdated: false,
-          actions: [],
-          summary: "Managetr Gemini - No response from Gemini",
-          fullReport: "Management completed but no response returned",
-        };
+      // Rule 3: Link memories with 3+ shared semantic tags
+      for (const newMem of newMemories) {
+        for (const other of allMemories) {
+          if (other.id === newMem.id) continue;
+          if (sharedTagCount(newMem, other) >= 3) {
+            // Add related_to link (both directions would be ideal but we only update the new one)
+            const isGlobal = newMem.project_id === "global";
+            const existingRelated = newMem.related_to || [];
+            if (!existingRelated.includes(other.id)) {
+              if (isGlobal) {
+                await store.updateGlobalMemory(newMem.id, {
+                  related_to: [...existingRelated, other.id],
+                });
+              } else {
+                await store.updateMemory(projectId, newMem.id, {
+                  related_to: [...existingRelated, other.id],
+                });
+              }
+              linkedCount++;
+              actions.push(
+                `LINKED ${newMem.id.slice(-6)} ↔ ${other.id.slice(-6)} (${sharedTagCount(newMem, other)} shared tags)`,
+              );
+            }
+          }
+        }
       }
 
-      logger.debug(
-        `Manager Gemini - Got response (${aiResponse.length} chars)`,
-        "manager",
-      );
+      const summary = `Superseded: ${supersededCount}, Linked: ${linkedCount}`;
+      logger.debug(`Manager complete: ${summary}`, "manager");
 
-      // Parse using our existing SDK parser (same format expected)
-      const result = this._parseSDKManagementResult(aiResponse);
-      logger.debug(
-        `Manager Gemini - Parsed result - superseded: ${result.superseded}, resolved: ${result.resolved}, linked: ${result.linked}`,
-        "manager",
-      );
-      return result;
-    } catch (error: any) {
-      logger.debug(`Manager Gemini - Parse error: ${error.message}`, "manager");
-      logger.debug(
-        `Manager Gemini - Raw stdout (first 500 chars): ${stdout.slice(0, 500)}`,
-        "manager",
-      );
       return {
-        success: false,
-        superseded: 0,
+        success: true,
+        superseded: supersededCount,
         resolved: 0,
-        linked: 0,
+        linked: linkedCount,
         filesRead: 0,
-        filesWritten: 0,
+        filesWritten: supersededCount + linkedCount,
         primerUpdated: false,
-        actions: [],
-        summary: "",
-        fullReport: `Manager Gemini - Error: Failed to parse Gemini response: ${error.message}`,
+        actions,
+        summary,
+        fullReport: `=== MANAGEMENT ACTIONS ===\n${actions.join("\n")}\n\n=== SUMMARY ===\n${summary}`,
+      };
+    } catch (error: any) {
+      logger.error(`Manager failed: ${error.message}`);
+      return {
+        success: false, superseded: supersededCount, resolved: 0, linked: linkedCount,
+        filesRead: 0, filesWritten: 0, primerUpdated: false,
+        actions, summary: "", fullReport: `Manager error: ${error.message}`,
         error: error.message,
       };
     }

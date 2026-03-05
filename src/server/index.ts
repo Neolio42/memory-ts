@@ -247,6 +247,15 @@ export async function createServer(config: ServerConfig = {}) {
             try {
               let result: CurationResult
 
+              // Build existing memories context for deduplication
+              const existingMemories = await engine.buildExistingMemoriesContext(
+                body.project_id,
+                body.project_path
+              )
+              if (existingMemories) {
+                logger.debug(`Built existing memories context (${existingMemories.length} chars)`, 'server')
+              }
+
               // Branch on CLI type - Gemini CLI vs Claude Code
               if (body.cli_type === 'gemini-cli') {
                 // Use Gemini CLI for curation (no Claude dependency)
@@ -258,7 +267,8 @@ export async function createServer(config: ServerConfig = {}) {
                   body.claude_session_id,
                   body.trigger,
                   body.cwd,  // Run from original project directory
-                  geminiApiKey
+                  geminiApiKey,
+                  existingMemories || undefined
                 )
               } else {
                 // Default: Use Claude Code (session resume or transcript parsing)
@@ -266,7 +276,8 @@ export async function createServer(config: ServerConfig = {}) {
                 // Falls back to segmented transcript parsing if resume fails
                 result = await curator.curateWithSessionResume(
                   body.claude_session_id,
-                  body.trigger
+                  body.trigger,
+                  existingMemories || undefined
                 )
 
                 // Fallback to transcript-based curation WITH SEGMENTATION if resume returned nothing
@@ -283,13 +294,14 @@ export async function createServer(config: ServerConfig = {}) {
                         `Curation segment ${progress.segmentIndex + 1}/${progress.totalSegments}: ${progress.memoriesExtracted} memories (~${Math.round(progress.tokensInSegment / 1000)}k tokens)`,
                         'server'
                       )
-                    }
+                    },
+                    existingMemories || undefined
                   )
                 }
               }
 
               if (result.memories.length > 0) {
-                await engine.storeCurationResult(
+                const { storedIds } = await engine.storeCurationResult(
                   body.project_id,
                   body.session_id,
                   result,
@@ -299,41 +311,21 @@ export async function createServer(config: ServerConfig = {}) {
                 logger.logCurationComplete(result.memories.length, result.session_summary)
                 logger.logCuratedMemories(result.memories)
 
-                // Fire and forget - spawn management agent to update/organize memories
+                // Run deterministic dedup manager (fast, no LLM)
                 const sessionNumber = await engine.getSessionNumber(body.project_id, body.project_path)
-                // Get resolved storage paths from engine config (runtime values, not hardcoded)
                 const storagePaths = engine.getStoragePaths(body.project_id, body.project_path)
-                // Remember cli_type for manager
-                const cliType = body.cli_type
 
                 setImmediate(async () => {
                   try {
                     logger.logManagementStart(result.memories.length)
                     const startTime = Date.now()
 
-                    // Use appropriate mode based on CLI type
-                    let managementResult
-                    if (cliType === 'gemini-cli') {
-                      // Use Gemini CLI for management (no Claude dependency)
-                      // Use same API key fallback as curation (hooks don't inherit env vars)
-                      const geminiApiKey = body.gemini_api_key || process.env.GEMINI_API_KEY
-                      logger.debug('Using Gemini CLI for management', 'server')
-                      managementResult = await manager.manageWithGeminiCLI(
-                        body.project_id,
-                        sessionNumber,
-                        result,
-                        storagePaths,
-                        geminiApiKey
-                      )
-                    } else {
-                      // Use Claude Agent SDK mode - more reliable than CLI
-                      managementResult = await manager.manageWithSDK(
-                        body.project_id,
-                        sessionNumber,
-                        result,
-                        storagePaths
-                      )
-                    }
+                    const store = await engine.getStore(body.project_id, body.project_path)
+                    const managementResult = await manager.manage(
+                      store,
+                      body.project_id,
+                      storedIds
+                    )
 
                     logger.logManagementComplete({
                       success: managementResult.success,
@@ -348,7 +340,7 @@ export async function createServer(config: ServerConfig = {}) {
                       error: managementResult.error,
                     })
 
-                    // Store management log with full action history (no truncation)
+                    // Store management log
                     await engine.storeManagementLog({
                       projectId: body.project_id,
                       sessionNumber,
@@ -369,7 +361,7 @@ export async function createServer(config: ServerConfig = {}) {
                       },
                     })
 
-                    // Notify @rlabs-inc/mind (fire-and-forget, never blocks memory pipeline)
+                    // Notify @rlabs-inc/mind (fire-and-forget)
                     if (process.env.MEMORY_MIND_WEBHOOK_URL) {
                       fetch(process.env.MEMORY_MIND_WEBHOOK_URL, {
                         method: 'POST',

@@ -96,6 +96,9 @@ export const memorySchema = {
   // ========== RETRIEVAL CONTROL (v2) ==========
   exclude_from_retrieval: 'boolean',    // Force exclusion
 
+  // ========== EVENT TRACKING ==========
+  event_date: 'string',                // ISO date (YYYY-MM-DD) when event occurred
+
   // ========== SCHEMA VERSION (v2) ==========
   schema_version: 'number',             // Track which schema version this record uses
 } as const satisfies SchemaDefinition

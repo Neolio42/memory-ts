@@ -16,7 +16,8 @@ import {
   type ParsedSession,
 } from '../../core/session-parser.ts'
 import { Curator } from '../../core/curator.ts'
-import { Manager, type StoragePaths } from '../../core/manager.ts'
+import { Manager } from '../../core/manager.ts'
+import type { StoragePaths } from '../../utils/paths.ts'
 import { MemoryStore } from '../../core/store.ts'
 import type { CurationResult, CuratedMemory } from '../../types/memory.ts'
 import { homedir } from 'os'
@@ -305,6 +306,7 @@ export async function ingest(options: IngestOptions) {
 
       // Accumulate all results from this session for manager
       const sessionMemories: CuratedMemory[] = []
+      const sessionMemoryIds: string[] = []
       const sessionSummaries: string[] = []
       const interactionTones: string[] = []
       const projectSnapshots: NonNullable<CurationResult['project_snapshot']>[] = []
@@ -325,10 +327,11 @@ export async function ingest(options: IngestOptions) {
           // Stop spinner with success message
           spinner.stop(`        ${style('green', '✓')} ${segmentLabel}: ${result.memories.length} memories (${tokensLabel})`)
 
-          // Store memories
+          // Store memories and collect IDs
           for (const memory of result.memories) {
-            await store.storeMemory(project.folderId, session.id, memory)
+            const id = await store.storeMemory(project.folderId, session.id, memory)
             sessionMemories.push(memory)
+            sessionMemoryIds.push(id)
             totalMemories++
           }
 
@@ -408,21 +411,12 @@ export async function ingest(options: IngestOptions) {
       if (sessionMemories.length > 0 && managerEnabled) {
         try {
           // Start spinner for manager
-          spinner.start(`Managing ${sessionMemories.length} memories - organizing with Opus 4.5...`)
+          spinner.start(`Managing ${sessionMemories.length} memories - deduplicating...`)
 
-          // Build curation result for manager (using combined/merged values)
-          const curationResult: CurationResult = {
-            memories: sessionMemories,
-            session_summary: combinedSummary,
-            interaction_tone: finalTone,
-            project_snapshot: mergedSnapshot,
-          }
-
-          const managerResult = await manager.manageWithSDK(
+          const managerResult = await manager.manage(
+            store,
             project.folderId,
-            1, // session number not relevant for historical ingestion
-            curationResult,
-            storagePaths
+            sessionMemoryIds
           )
 
           if (managerResult.success) {
