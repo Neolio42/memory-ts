@@ -84,8 +84,7 @@ export class Curator {
 - Extract NEW information, not restatements of existing knowledge
 - Preserve texture: actual quotes, specific dates, emotional context
 - Each memory must stand alone — no references to "the conversation"
-- Personal/philosophical content should be scope: 'global' (shared across all projects)
-- Technical/project content should be scope: 'project'
+- See "Scope Rules" section below for global vs project scoping — global is RARE
 - When the conversation references dates/times, extract an event_date (YYYY-MM-DD)
 
 **HOW RETRIEVAL WORKS - ACTIVATION SIGNAL ALGORITHM**
@@ -165,9 +164,38 @@ If only 1 signal fires, the memory is REJECTED. This prevents noise.
    - 0.5-0.6 = Useful context, nice to have if relevant
    - NOTE: This does NOT affect whether the memory passes the relevance gate!
 
-**SCOPE DETERMINES WHERE MEMORIES SURFACE**:
-- scope: 'global' → surfaces in ALL projects (personal facts, philosophy, preferences)
-- scope: 'project' → surfaces ONLY in this project (technical details, project state)
+## Scope Rules (STRICT)
+
+**scope: "global"** — ONLY for things that change how the AI should BEHAVE with this user across ALL projects:
+- Collaboration rules ("ask before removing features", "don't over-explain", "no trailing summaries")
+- Workflow shorthands ("2+2 means 4 parallel auditors", "yeye = execute immediately")
+- Hard constraints ("no API token outside Claude Code")
+- Cross-project references ("ideas backlog at ~/Projects/ideas/")
+
+**scope: "project"** — EVERYTHING ELSE. This includes:
+- Technical decisions, architecture, gotchas, bugs, tricks
+- Personal insights (health, psychology, appointments, life events)
+- Tools, APIs, frameworks, CLI tricks
+- State, progress, milestones
+- Philosophy and breakthroughs that came up during work
+- Identity/background info (the session primer already handles this)
+
+**NEVER make global:**
+- Technical gotchas or tricks (even if cross-project — store where discovered)
+- Health/medical anything
+- Personal life events, relationships, emotional states
+- Restatements of things already in the session primer or existing memories
+- One-time events or completed tasks
+
+Most sessions should produce ZERO globals. If you're creating a global, you're probably wrong.
+
+## Anti-Duplication Rules (CRITICAL)
+
+If EXISTING MEMORIES are provided above, you MUST:
+1. **Skip** anything that restates existing knowledge — even if worded differently
+2. **Skip** anything already covered by the session primer (user identity, background, philosophy)
+3. Only use "supersedes" if the new info genuinely UPDATES an existing memory with new facts
+4. A reframe or re-articulation of known info is NOT worth storing
 
 **TRIGGER PHRASES**: Situational patterns describing WHEN this memory is relevant. Conceptual matching, not exact phrases.
 - 'when working on memory system'
@@ -188,7 +216,7 @@ If only 1 signal fires, the memory is REJECTED. This prevents noise.
   • unresolved - Open questions, investigations, todos, blockers
   • state - Current project status, what's working/broken now
 - **temporal_class**: How long should this persist? 'eternal' (never fades), 'long_term' (years), 'medium_term' (weeks), 'short_term' (days), 'ephemeral' (surface next session only, then expire)
-- **scope**: 'global' (shared across ALL projects - personal, philosophy) or 'project' (specific to this codebase)
+- **scope**: 'project' (default — almost everything) or 'global' (RARE — see Scope Rules below)
 - **domain**: Specific area like 'embeddings', 'auth', 'ui', 'family' (project-specific)
 - **feature**: Specific feature if applicable (e.g., 'gpu-acceleration', 'login-flow')
 - **related_files**: Source files for technical memories (e.g., ['src/core/store.ts'])
@@ -341,7 +369,7 @@ ${existingMemories}
 
 The user has disabled personal memory extraction. Do NOT extract any memories with:
 - context_type: "personal"
-- scope: "global" when the content is about the user's personal life, relationships, family, or emotional states
+- scope: "global" when the content is about the user's personal life, relationships, family, or emotional states (these go to project scope if personal memory is enabled)
 - Content about the user's preferences, feelings, personal opinions, or relationship dynamics
 
 Focus ONLY on technical, architectural, debugging, decision, workflow, and project-related memories. Skip any content that would reveal personal information about the user.`

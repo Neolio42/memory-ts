@@ -854,6 +854,21 @@ export class MemoryEngine {
     }
 
     const lines: string[] = []
+
+    // Include session primer topics so curator doesn't re-extract known identity/context
+    if (this._config.personalMemoriesEnabled) {
+      const primer = await store.getPersonalPrimer()
+      if (primer?.content) {
+        lines.push('### ALREADY IN SESSION PRIMER (do NOT re-extract any of this):')
+        // Extract key topics from primer to give curator awareness without full text
+        const primerLines = primer.content.split('\n').filter((l: string) => l.trim().length > 10)
+        for (const line of primerLines.slice(0, 15)) {
+          lines.push(`- ${line.trim().slice(0, 120)}`)
+        }
+        lines.push('')
+      }
+    }
+
     for (const [type, memories] of grouped) {
       lines.push(`### ${type} (${memories.length})`)
       for (const m of memories) {
