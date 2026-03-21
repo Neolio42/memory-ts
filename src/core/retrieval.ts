@@ -79,6 +79,35 @@ const STOPWORDS = new Set([
 
 
 /**
+ * Message intent classification (keyword-based, no LLM)
+ */
+type MessageIntent = 'technical' | 'personal' | 'casual' | 'mixed'
+
+const INTENT_KEYWORDS = {
+  technical: new Set([
+    'implement', 'code', 'function', 'method', 'api', 'bug', 'error', 'fix',
+    'debug', 'test', 'deploy', 'build', 'compile', 'refactor', 'migrate',
+    'database', 'server', 'client', 'endpoint', 'schema', 'query', 'config',
+    'dependency', 'package', 'module', 'class', 'type', 'interface', 'import',
+    'performance', 'cache', 'memory', 'thread', 'async', 'promise', 'callback',
+    'commit', 'branch', 'merge', 'pr', 'ci', 'pipeline', 'docker', 'kubernetes',
+  ]),
+  personal: new Set([
+    'feel', 'feeling', 'happy', 'sad', 'frustrated', 'excited', 'tired',
+    'family', 'friend', 'relationship', 'life', 'health', 'hobby', 'weekend',
+    'vacation', 'birthday', 'anniversary', 'personal', 'home', 'morning',
+    'evening', 'sleep', 'eat', 'drink', 'walk', 'exercise', 'music', 'movie',
+    'book', 'read', 'play', 'fun', 'relax', 'stress', 'worry', 'hope',
+    'dream', 'goal', 'philosophy', 'believe', 'value', 'principle', 'think',
+  ]),
+  casual: new Set([
+    'hello', 'hey', 'hi', 'thanks', 'thank', 'bye', 'okay', 'ok', 'sure',
+    'yeah', 'yes', 'no', 'nah', 'cool', 'nice', 'great', 'awesome', 'lol',
+    'haha', 'hmm', 'well', 'anyway', 'whatever', 'right', 'gotcha', 'yep',
+  ]),
+}
+
+/**
  * Activation Signal Retrieval
  *
  * Phase 1: Count activation signals (binary relevance indicators)
@@ -98,6 +127,28 @@ export class SmartVectorRetrieval {
       .split(/\s+/)
       .filter(w => w.length > 2 && !STOPWORDS.has(w))
     return new Set(words)
+  }
+
+  /**
+   * Classify message intent via keyword counting (no LLM)
+   */
+  private _classifyIntent(messageWords: Set<string>): MessageIntent {
+    let technical = 0
+    let personal = 0
+    let casual = 0
+
+    for (const word of messageWords) {
+      if (INTENT_KEYWORDS.technical.has(word)) technical++
+      if (INTENT_KEYWORDS.personal.has(word)) personal++
+      if (INTENT_KEYWORDS.casual.has(word)) casual++
+    }
+
+    const total = technical + personal + casual
+    if (total === 0) return 'mixed'
+    if (casual > technical && casual > personal) return 'casual'
+    if (technical > personal * 2) return 'technical'
+    if (personal > technical * 2) return 'personal'
+    return 'mixed'
   }
 
   /**
@@ -226,7 +277,8 @@ export class SmartVectorRetrieval {
       }
     }
 
-    const threshold = tags.length <= 2 ? 1 : 2
+    // Threshold scales with tag count: 1 for ≤4 tags, 2 for 5-7, 3 for 8+
+    const threshold = tags.length <= 4 ? 1 : tags.length >= 8 ? 3 : 2
     return { activated: matchCount >= threshold, count: matchCount }
   }
 
@@ -240,6 +292,9 @@ export class SmartVectorRetrieval {
   ): boolean {
     if (!domain) return false
     const domainLower = domain.trim().toLowerCase()
+    // Short words (<=4 chars) like "api", "auth" must match as whole words only
+    // to avoid substring false positives (e.g. "api" matching "capital")
+    if (domainLower.length <= 4) return messageWords.has(domainLower)
     return messageWords.has(domainLower) || messageLower.includes(domainLower)
   }
 
@@ -253,6 +308,8 @@ export class SmartVectorRetrieval {
   ): boolean {
     if (!feature) return false
     const featureLower = feature.trim().toLowerCase()
+    // Short words (<=4 chars) must match as whole words only
+    if (featureLower.length <= 4) return messageWords.has(featureLower)
     return messageWords.has(featureLower) || messageLower.includes(featureLower)
   }
 
@@ -326,7 +383,8 @@ export class SmartVectorRetrieval {
     memory: StoredMemory,
     signalCount: number,
     messageLower: string,
-    messageWords: Set<string>
+    messageWords: Set<string>,
+    intent: MessageIntent = 'mixed'
   ): number {
     let score = 0
 
@@ -384,7 +442,30 @@ export class SmartVectorRetrieval {
     const confidence = memory.confidence_score ?? 0.7
     if (confidence < 0.5) score -= 0.1
 
-    // NOTE: emotional_resonance matching removed in v3 (field deleted - 580 variants, unusable)
+    // DECAY: fade_rate * sessions_since_surfaced, capped at -0.5
+    const fadeRate = memory.fade_rate ?? 0
+    const sessionsSince = memory.sessions_since_surfaced ?? 0
+    if (fadeRate > 0 && sessionsSince > 0) {
+      const fadePenalty = Math.min(fadeRate * sessionsSince, 0.5)
+      score -= fadePenalty
+    }
+
+    // AGE-BASED DECAY: penalize stale memories by temporal class
+    const createdAt = memory.created_at ?? Date.now()
+    const ageDays = (Date.now() - createdAt) / (1000 * 60 * 60 * 24)
+    if (temporalClass === 'short_term' && ageDays > 7) score -= 0.2
+    else if (temporalClass === 'medium_term' && ageDays > 30) score -= 0.15
+    else if (temporalClass === 'ephemeral' && ageDays > 3) score -= 0.3
+
+    // INTENT CROSS-CONTEXT PENALTY: penalize memories that don't match conversation intent
+    if (intent !== 'mixed') {
+      const memoryIsTechnical = ['technical', 'architectural', 'debug', 'workflow', 'state', 'decision'].includes(contextType)
+      const memoryIsPersonal = ['personal', 'philosophy', 'breakthrough'].includes(contextType)
+
+      if (intent === 'technical' && memoryIsPersonal) score -= 0.2
+      else if (intent === 'personal' && memoryIsTechnical) score -= 0.25
+      else if (intent === 'casual') score -= 0.15  // Casual conversations don't need memories
+    }
 
     return score
   }
@@ -410,6 +491,8 @@ export class SmartVectorRetrieval {
     const messageLower = currentMessage.toLowerCase()
     const messageWords = this._extractSignificantWords(currentMessage)
     const messagePaths = this._extractFilePaths(currentMessage)
+    const intent = this._classifyIntent(messageWords)
+    logger.debug(`Message intent: ${intent}`, 'retrieval')
 
     // Build lookup map for redirect resolution
     const memoryById = new Map<string, StoredMemory>()
@@ -462,7 +545,7 @@ export class SmartVectorRetrieval {
       if (contentActivated) signalCount++
       if (filesActivated) signalCount++
       // Vector similarity as signal if semantically close
-      if (vectorSimilarity >= 0.30) signalCount++
+      if (vectorSimilarity >= 0.25) signalCount++
 
       const signals: ActivationSignals = {
         trigger: triggerResult.activated,
@@ -504,7 +587,7 @@ export class SmartVectorRetrieval {
       const isGlobal = memoryToSurface.scope === 'global' || memoryToSurface.project_id === 'global'
 
       // Calculate importance for ranking (Phase 2) - uses ALL rich metadata
-      const importanceScore = this._calculateImportanceScore(memoryToSurface, signalCount, messageLower, messageWords)
+      const importanceScore = this._calculateImportanceScore(memoryToSurface, signalCount, messageLower, messageWords, intent)
 
       activatedMemories.push({
         memory: memoryToSurface,
@@ -514,6 +597,16 @@ export class SmartVectorRetrieval {
       })
       activatedIds.add(memoryToSurface.id)
     }
+
+    // IMPORTANCE FLOOR: drop memories with score < 0.4 after decay/intent penalties
+    const beforeFloor = activatedMemories.length
+    const flooredMemories = activatedMemories.filter(m => m.importanceScore >= 0.4)
+    if (beforeFloor !== flooredMemories.length) {
+      logger.debug(`Importance floor: dropped ${beforeFloor - flooredMemories.length} memories below 0.4`, 'retrieval')
+    }
+    // Replace activatedMemories with filtered list
+    activatedMemories.length = 0
+    activatedMemories.push(...flooredMemories)
 
     // Log diagnostics
     this._logActivationDistribution(activatedMemories, candidates.length, rejectedCount)
@@ -689,7 +782,7 @@ export class SmartVectorRetrieval {
           feature: item.signals.feature,
           content: item.signals.content,
           files: item.signals.files,
-          vector: item.signals.vectorSimilarity >= 0.30,
+          vector: item.signals.vectorSimilarity >= 0.25,
           vectorSimilarity: item.signals.vectorSimilarity,
         },
       })),
@@ -716,7 +809,7 @@ export class SmartVectorRetrieval {
     if (signals.feature) reasons.push('feature')
     if (signals.content) reasons.push('content')
     if (signals.files) reasons.push('files')
-    if (signals.vectorSimilarity >= 0.30) reasons.push(`vector:${(signals.vectorSimilarity * 100).toFixed(0)}%`)
+    if (signals.vectorSimilarity >= 0.25) reasons.push(`vector:${(signals.vectorSimilarity * 100).toFixed(0)}%`)
 
     return reasons.length
       ? `Activated: ${reasons.join(', ')} (${signals.count} signals)`
@@ -747,7 +840,7 @@ export class SmartVectorRetrieval {
       if (mem.signals.feature) featureCount++
       if (mem.signals.content) contentCount++
       if (mem.signals.files) filesCount++
-      if (mem.signals.vectorSimilarity >= 0.30) vectorCount++
+      if (mem.signals.vectorSimilarity >= 0.25) vectorCount++
     }
 
     logger.logScoreDistribution({

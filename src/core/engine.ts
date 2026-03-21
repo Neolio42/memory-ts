@@ -15,6 +15,7 @@ import type {
   CurationResult,
 } from '../types/memory.ts'
 import { getMemoryEmoji, MEMORY_TYPE_EMOJI, V4_DEFAULTS } from '../types/memory.ts'
+import { logger } from '../utils/logger.ts'
 
 /**
  * Storage mode for memories
@@ -110,7 +111,7 @@ export class MemoryEngine {
       storageMode: config.storageMode ?? 'central',
       centralPath: config.centralPath ?? join(homedir(), '.local', 'share', 'memory'),
       localFolder: config.localFolder ?? '.memory',
-      maxMemories: config.maxMemories ?? 5,
+      maxMemories: config.maxMemories ?? 3,
       embedder: config.embedder,
       personalMemoriesEnabled: config.personalMemoriesEnabled ?? true,
     }
@@ -188,8 +189,13 @@ export class MemoryEngine {
       sessionId
     )
 
-    // First message of session: return primer
+    // First message of session: return primer + session tick
     if (messageCount === 0) {
+      // Session tick: increment sessions_since_surfaced for all active memories (fire-and-forget)
+      this._sessionTick(store, projectId).catch(err =>
+        logger.debug(`Session tick error: ${err}`, 'engine')
+      )
+
       const primer = await this._generateSessionPrimer(store, projectId)
       return {
         primer,
@@ -265,13 +271,18 @@ export class MemoryEngine {
       sessionContext,
       maxMemories,
       injectedIds.size,
-      2  // maxGlobalMemories: limit global to 2, prioritize tech over personal
+      1  // maxGlobalMemories: limit global to 1, prioritize tech over personal
     )
 
     // Update injected memories for deduplication
     for (const memory of relevantMemories) {
       injectedIds.add(memory.id)
     }
+
+    // Fire-and-forget: update surfacing metadata for returned memories
+    this._updateSurfacingMetadata(store, projectId, relevantMemories).catch(err =>
+      logger.debug(`Surfacing metadata update error: ${err}`, 'engine')
+    )
 
     return {
       memories: relevantMemories,
@@ -477,6 +488,68 @@ export class MemoryEngine {
   ): Promise<StoredMemory | null> {
     const store = await this._getStore(projectId, projectPath)
     return store.getMemory(projectId, memoryId)
+  }
+
+  // ================================================================
+  // DECAY & SURFACING
+  // ================================================================
+
+  /**
+   * Session tick: increment sessions_since_surfaced for all active memories
+   * Called once at session start (fire-and-forget)
+   */
+  private async _sessionTick(store: MemoryStore, projectId: string): Promise<void> {
+    const [projectMemories, globalMemories] = await Promise.all([
+      store.getAllMemories(projectId),
+      store.getGlobalMemories(),
+    ])
+
+    let updated = 0
+    for (const memory of projectMemories) {
+      if (memory.status && memory.status !== 'active') continue
+      const current = memory.sessions_since_surfaced ?? 0
+      await store.updateMemory(projectId, memory.id, {
+        sessions_since_surfaced: current + 1,
+      })
+      updated++
+    }
+    for (const memory of globalMemories) {
+      if (memory.status && memory.status !== 'active') continue
+      const current = memory.sessions_since_surfaced ?? 0
+      await store.updateGlobalMemory(memory.id, {
+        sessions_since_surfaced: current + 1,
+      })
+      updated++
+    }
+
+    logger.debug(`Session tick: incremented sessions_since_surfaced for ${updated} memories`, 'engine')
+  }
+
+  /**
+   * Update surfacing metadata when memories are returned to the user
+   * Sets last_surfaced = now and sessions_since_surfaced = 0
+   */
+  private async _updateSurfacingMetadata(
+    store: MemoryStore,
+    projectId: string,
+    memories: RetrievalResult[]
+  ): Promise<void> {
+    const now = Date.now()
+    for (const memory of memories) {
+      const isGlobal = memory.scope === 'global' || memory.project_id === 'global'
+      if (isGlobal) {
+        await store.updateGlobalMemory(memory.id, {
+          last_surfaced: now,
+          sessions_since_surfaced: 0,
+        })
+      } else {
+        await store.updateMemory(projectId, memory.id, {
+          last_surfaced: now,
+          sessions_since_surfaced: 0,
+        })
+      }
+    }
+    logger.debug(`Updated surfacing metadata for ${memories.length} memories`, 'engine')
   }
 
   // ================================================================

@@ -555,6 +555,8 @@ export class MemoryStore {
       trigger_phrases?: string[]
       superseded_by?: string
       related_to?: string[]
+      last_surfaced?: number
+      sessions_since_surfaced?: number
     }
   ): Promise<{ success: boolean; updated_fields: string[] }> {
     const { memories } = await this.getProject(projectId)
@@ -612,6 +614,14 @@ export class MemoryStore {
     if (updates.related_to !== undefined) {
       updateData.related_to = updates.related_to
       updatedFields.push('related_to')
+    }
+    if (updates.last_surfaced !== undefined) {
+      updateData.last_surfaced = updates.last_surfaced
+      updatedFields.push('last_surfaced')
+    }
+    if (updates.sessions_since_surfaced !== undefined) {
+      updateData.sessions_since_surfaced = Math.max(0, updates.sessions_since_surfaced)
+      updatedFields.push('sessions_since_surfaced')
     }
 
     if (updatedFields.length === 0) {
