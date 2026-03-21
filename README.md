@@ -1,162 +1,109 @@
-# @neolio42/memory
+# memory
 
-> Fork of [@rlabs-inc/memory](https://github.com/RLabs-Inc/memory-ts) with dedup-aware curation, deterministic memory management, and global scope routing fixes.
+Persistent memory for AI coding sessions. Your AI remembers who you are, what you've built, and picks up where you left off.
 
-**Context continuity for Claude Code and Gemini CLI sessions.**
-
-The memory system preserves context, insights, and relationship across conversations. When you start a new session, your AI remembers who you are, what you've built together, and picks up right where you left off.
-
-Works with both **Claude Code** and **Gemini CLI** - use your preferred AI coding assistant, or even both simultaneously.
+Hooks into **Claude Code** and **Gemini CLI** — memories are extracted at session end and resurface automatically when relevant.
 
 ## Quick Start
 
 ```bash
-# Install globally (from GitHub)
 bun install -g github:Neolio42/memory-ts
 
-# Set up hooks (one time) - choose your CLI:
-memory install              # For Claude Code
-memory install --gemini     # For Gemini CLI
+memory install              # Claude Code hooks
+memory install --gemini     # Gemini CLI hooks
 
-# Start the memory server
-memory serve
-
-# Verify everything works
-memory doctor
+memory serve                # Start the server
+memory doctor               # Verify everything works
 ```
 
-That's it. Use your AI coding assistant normally — memories are extracted and surfaced automatically.
-
-## What's Different in This Fork
-
-### v0.7.0 — Curation Pipeline Rewrite
-
-The original curation pipeline produced massive duplication — 155 memories with ~15 unique concepts. This fork fixes the root causes:
-
-**Dedup-aware curation**: The curator now receives a compact list of all existing memories before extracting new ones. It can skip duplicates and declare `supersedes: "#old-id"` to replace outdated memories.
-
-**Deterministic manager**: Replaced the LLM-based manager agent with fast, deterministic rules:
-- Same domain + feature + >80% headline overlap → supersede older memory
-- Multiple state/snapshot memories for same domain → keep newest
-- 3+ shared semantic tags → link via `related_to`
-
-No LLM calls, runs in <10ms, no hallucinated actions.
-
-**Global scope routing fix**: Memories marked `scope: "global"` (personal, philosophy) now correctly route to the global database instead of staying in project scope.
-
-**Cross-segment dedup**: When curating large sessions split into segments, extracted headlines carry forward to prevent re-extraction across segments.
-
-**New fields**: `event_date` for temporal context, `supersedes` for explicit replacement chains.
+Use your AI normally. Memories are extracted and surfaced without any manual intervention.
 
 ## How It Works
 
-### 1. Session Start
-The `SessionStart` hook injects a primer: time since last session, previous session summary, project status, personal context.
+A lightweight HTTP server (`localhost:8765`) sits between your AI CLI and a local memory store. Three hooks drive everything:
 
-### 2. Every Message
-The `UserPromptSubmit` hook embeds your message (~5ms), searches global + project memories, applies the activation signal algorithm, and injects relevant matches.
+**Session start** — Injects a primer: who you are, last session summary, project status, temporal context.
 
-### 3. Session End
-The `PreCompact` or `SessionEnd` hook triggers curation:
-1. Resumes the Claude session (or parses transcript as fallback)
-2. Claude reviews the conversation with existing memories context
-3. Extracts memories with rich metadata, skipping duplicates
-4. Stores as markdown files with 384d embeddings
-5. Routes to global or project scope
+**Every message** — Embeds your message (~5ms), runs it through the activation signal algorithm against all stored memories, injects the relevant ones as context.
 
-### 4. Memory Management
-After curation, the deterministic manager deduplicates, supersedes stale memories, and links related ones. No LLM needed.
+**Session end** — Curates the conversation into structured memories with rich metadata (trigger phrases, semantic tags, domain/feature labels, importance weights). Stores as markdown files with 384-dimensional vector embeddings.
 
-## Activation Signal Retrieval
+## Retrieval
 
-Philosophy: **silence over noise**. A memory surfaces only if multiple signals agree.
+Philosophy: **silence over noise**. A memory only surfaces when multiple independent signals agree it should.
 
-**Phase 1 — 7 binary signals** (need 2+ to proceed):
+7 binary signals are checked against each memory: trigger phrase match, semantic tag overlap, domain match, feature match, content word overlap, file path match, and vector similarity. Need 2+ to activate.
 
-| Signal | Description |
-|--------|-------------|
-| Trigger | Trigger phrase matched (>50% word match) |
-| Tags | 2+ semantic tags found in message |
-| Domain | Domain word found in message |
-| Feature | Feature word found in message |
-| Content | 3+ significant content words overlap |
-| Files | Related file path matched in message |
-| Vector | Semantic similarity >= 40% |
+Activated memories get ranked by importance with modifiers:
+- **Decay** — memories fade over sessions if not resurfaced (`fade_rate × sessions_since_surfaced`)
+- **Age** — ephemeral memories expire in days, short-term in a week, medium-term in a month
+- **Intent** — keyword classifier detects technical/personal/casual context and penalizes cross-type memories
+- **Floor** — anything scoring below 0.4 after penalties gets dropped
 
-**Phase 2 — Importance ranking** among activated memories (base weight + signal/temporal/context bonuses).
+Max 3 memories per message, 1 global cap. Tested against 119 real voice-transcribed messages — 0.73 avg per message, zero false cross-context leaks.
 
-**Selection**: Sort by signal count then importance. Max 2 global memories, project memories fill remaining slots.
+## Curation
 
-## Architecture
+At session end, Claude reviews the full conversation with awareness of all existing memories. It extracts new ones with structured metadata and can explicitly supersede outdated memories.
 
-```
-Claude Code / Gemini CLI
-  │
-  ├─ SessionStart  → session-start.ts ──┐
-  ├─ UserPrompt    → user-prompt.ts   ──┼──→ Memory Server (HTTP :8765)
-  └─ SessionEnd    → curation.ts      ──┘         │
-                                                   ▼
-                                    ┌──────────────────────────┐
-                                    │  Engine → Retrieval       │
-                                    │  Curator → Store          │
-                                    │  Manager (deterministic)  │
-                                    │  Embeddings (MiniLM-L6)   │
-                                    └──────────┬───────────────┘
-                                               │
-                                    ~/.local/share/memory/
-                                      ├── global/memories/
-                                      └── {project}/memories/
-```
+A deterministic manager runs after curation — deduplicates by domain+feature+headline overlap, links related memories, keeps the newest state snapshots. No LLM needed, runs in <10ms.
 
 ## Memory Schema
 
 Memories are markdown files with YAML frontmatter:
 
 ```yaml
-headline: "CLI returns error object when context full - check response.type"
-importance_weight: 0.9
-context_type: technical        # 11 types: technical, debug, architecture, decision, personal, philosophy, workflow, milestone, breakthrough, unresolved, state
+headline: "Tauri IPC has 1MB payload limit — silent failure on large transcriptions"
+importance_weight: 0.85
+context_type: technical        # technical, debug, architecture, decision, personal, philosophy, workflow, milestone, breakthrough, unresolved, state
 status: active                 # active, superseded, deprecated, archived
-scope: project                 # global or project
+scope: project                 # global (cross-project) or project (isolated)
 temporal_class: long_term      # eternal, long_term, medium_term, short_term, ephemeral
-domain: embeddings
-feature: vector-search
-semantic_tags: [embeddings, vectors, memory-system]
-trigger_phrases: [working with embeddings, vector search]
-supersedes: "old-memory-id"    # explicit replacement chain
-event_date: "2026-03-05"       # when it happened
+domain: tauri
+feature: ipc-bridge
+semantic_tags: [tauri, ipc, payload, silent-failure]
+trigger_phrases: [tauri ipc limit, large transcription fails, ipc undefined]
 ```
 
-## Two-Tier Structure
+Two-tier structure: **headline** (always shown) + **content body** (structured template, expanded on demand). Templates vary by type — technical gets WHAT/WHERE/HOW/WHY/GOTCHA, debug gets SYMPTOM/CAUSE/FIX/PREVENT, etc.
 
-| Part | Purpose |
-|------|---------|
-| **Headline** | 1-2 line summary, always shown in retrieval |
-| **Content** | Full structured template, expanded on demand via `/memory/expand` |
+## Storage
 
-Type-specific templates: technical (WHAT/WHERE/HOW/WHY/GOTCHA), debug (SYMPTOM/CAUSE/FIX/PREVENT), decision (DECISION/OPTIONS/REASONING/REVISIT_WHEN), etc.
+```
+~/.local/share/memory/
+  ├── global/memories/      # Personal, philosophy, preferences — shared across all projects
+  └── {project}/memories/   # Technical, debug, decisions — isolated per project
+```
 
-## Global vs Project Memories
+Global memories carry identity and cross-project knowledge. Project memories stay scoped to where they're relevant.
 
-- **Global** (`~/.local/share/memory/global/`): Personal, philosophy, preferences, cross-project breakthroughs — shared across ALL projects
-- **Project** (`~/.local/share/memory/{project}/`): Technical details, debugging insights, project-specific decisions — isolated per project
+## Architecture
 
-Max 2 global memories per retrieval, technical types prioritized.
+```
+Claude Code / Gemini CLI
+  │
+  ├─ SessionStart  → session-start hook ──┐
+  ├─ UserPrompt    → user-prompt hook   ──┼──→ Memory Server (HTTP :8765)
+  └─ SessionEnd    → curation hook      ──┘         │
+                                                     ▼
+                                      ┌────────────────────────┐
+                                      │  Engine    → Retrieval  │
+                                      │  Curator   → Store      │
+                                      │  Manager   (rules)      │
+                                      │  Embeddings (MiniLM-L6) │
+                                      └────────────────────────┘
+```
 
-## CLI Commands
+## CLI
 
 ```bash
-memory serve [--verbose] [--quiet] [--port 9000]
-memory install [--gemini] [--force]
-memory doctor [--verbose]
-memory stats [--project x]
-memory migrate [--dry-run] [--analyze] [--embeddings]
-memory ingest [--session <id>] [--project <name>] [--all] [--dry-run]
+memory serve [--verbose] [--port 9000]   # Run the server
+memory install [--gemini] [--force]      # Set up hooks
+memory doctor [--verbose]                # Health check
+memory stats [--project x]              # Memory counts
+memory migrate [--dry-run] [--embeddings] # DB maintenance
+memory ingest [--session <id>] [--all]   # Manual curation
 ```
-
-## Action Items Signal
-
-Add `***` at the end of any message to retrieve all pending action items (memories marked `action_required`, `awaiting_implementation`, `awaiting_decision`, or `unresolved`).
 
 ## Environment Variables
 
@@ -164,7 +111,6 @@ Add `***` at the end of any message to retrieve all pending action items (memori
 MEMORY_PORT=8765
 MEMORY_HOST=localhost
 MEMORY_STORAGE_MODE=central        # 'central' or 'local'
-MEMORY_API_URL=http://localhost:8765
 MEMORY_MANAGER_ENABLED=1
 MEMORY_PERSONAL_ENABLED=1
 ANTHROPIC_API_KEY=sk-...           # Optional: for SDK curation mode
@@ -172,9 +118,9 @@ ANTHROPIC_API_KEY=sk-...           # Optional: for SDK curation mode
 
 ## Requirements
 
-- [Bun](https://bun.sh) runtime
+- [Bun](https://bun.sh)
 - [Claude Code](https://claude.ai/code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-- ~100MB disk for embeddings model (downloaded on first run)
+- ~100MB for the embeddings model (auto-downloaded on first run)
 
 ## License
 
@@ -182,4 +128,4 @@ MIT
 
 ## Credits
 
-Fork of [RLabs-Inc/memory-ts](https://github.com/RLabs-Inc/memory-ts). Built with [fsdb](https://github.com/RLabs-Inc/fsdb), [@huggingface/transformers](https://github.com/xenova/transformers.js), and [Bun](https://bun.sh).
+Originally inspired by [RLabs-Inc/memory-ts](https://github.com/RLabs-Inc/memory-ts). Built with [fsdb](https://github.com/RLabs-Inc/fsdb), [@huggingface/transformers](https://github.com/xenova/transformers.js), and [Bun](https://bun.sh).
