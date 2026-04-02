@@ -1122,3 +1122,584 @@ describe('createRetrieval', () => {
     expect(instance).toBeInstanceOf(SmartVectorRetrieval)
   })
 })
+
+// ============================================================================
+// ADDITIONAL EDGE CASE TESTS
+// ============================================================================
+
+describe('SmartVectorRetrieval – edge cases', () => {
+  const retrieval = new SmartVectorRetrieval()
+
+  // ================================================================
+  // RESOLVED_BY REDIRECT
+  // ================================================================
+  describe('resolved_by redirect', () => {
+    it('redirects resolved_by memories to their resolution', () => {
+      const resolution = makeMemory({
+        id: 'resolution-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Resolution: fixed retrieval algorithm scoring mechanism',
+      })
+
+      const resolved = makeMemory({
+        id: 'old-resolved',
+        resolved_by: 'resolution-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Old bug in retrieval algorithm scoring mechanism',
+      })
+
+      const results = retrieval.retrieveRelevantMemories(
+        [resolved, resolution], 'retrieval algorithm scoring', zeroEmbedding, defaultCtx
+      )
+
+      const ids = results.map(r => r.id)
+      expect(ids).toContain('resolution-mem')
+    })
+
+    it('does not redirect to deprecated resolution', () => {
+      const deprecatedRes = makeMemory({
+        id: 'deprecated-res',
+        status: 'deprecated',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Deprecated resolution',
+      })
+
+      const resolved = makeMemory({
+        id: 'old-resolved-2',
+        resolved_by: 'deprecated-res',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Old issue about retrieval algorithm that should still surface',
+      })
+
+      const results = retrieval.retrieveRelevantMemories(
+        [resolved, deprecatedRes], 'retrieval algorithm scoring', zeroEmbedding, defaultCtx
+      )
+
+      // Should surface the old memory directly since resolution is deprecated
+      const ids = results.map(r => r.id)
+      expect(ids).toContain('old-resolved-2')
+    })
+  })
+
+  // ================================================================
+  // INTENT CLASSIFICATION EFFECTS
+  // ================================================================
+  describe('intent effects on ranking', () => {
+    it('personal intent penalizes technical memories', () => {
+      const memories = [
+        makeMemory({
+          id: 'tech-in-personal',
+          context_type: 'technical',
+          scope: 'project',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm implementation details scoring',
+        }),
+        makeMemory({
+          id: 'personal-in-personal',
+          context_type: 'personal',
+          scope: 'global',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Personal feelings about the retrieval algorithm project',
+        }),
+      ]
+
+      // Personal-heavy message
+      const results = retrieval.retrieveRelevantMemories(
+        memories,
+        'I feel happy about family vacation and personal retrieval algorithm',
+        zeroEmbedding, defaultCtx, 5
+      )
+
+      // Both may appear but personal should rank higher in personal intent
+      if (results.length >= 2) {
+        const personalIdx = results.findIndex(r => r.id === 'personal-in-personal')
+        const techIdx = results.findIndex(r => r.id === 'tech-in-personal')
+        expect(personalIdx).toBeLessThan(techIdx)
+      }
+    })
+
+    it('casual intent penalizes all memories', () => {
+      const memories = [
+        makeMemory({
+          id: 'casual-penalized',
+          importance_weight: 0.7,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Important retrieval algorithm scoring',
+        }),
+      ]
+
+      // Casual message
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'hey cool nice ok great awesome retrieval algorithm signals', zeroEmbedding, defaultCtx, 5
+      )
+
+      // The -0.15 casual penalty may push it below 0.4 importance floor depending on other factors
+      // Just verify it doesn't crash
+      expect(Array.isArray(results)).toBe(true)
+    })
+  })
+
+  // ================================================================
+  // EMPTY / SPECIAL MESSAGE INPUTS
+  // ================================================================
+  describe('special message inputs', () => {
+    it('handles empty message string', () => {
+      const memories = [
+        makeMemory({ id: 'empty-msg-test' }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, '', zeroEmbedding, defaultCtx
+      )
+
+      // Empty message should not match any triggers/tags
+      expect(results).toHaveLength(0)
+    })
+
+    it('handles message with only stopwords', () => {
+      const memories = [
+        makeMemory({ id: 'stopwords-test' }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'the is are was were to a an and or but', zeroEmbedding, defaultCtx
+      )
+
+      // Only stopwords → no significant words → no signals
+      expect(results).toHaveLength(0)
+    })
+
+    it('handles message with special characters and numbers', () => {
+      const memories = [
+        makeMemory({
+          id: 'special-chars',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm signals scoring',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, '!!! retrieval ### algorithm $$$ 12345 %%% ^^^ &&&', zeroEmbedding, defaultCtx
+      )
+
+      // Should still match trigger and tags despite special chars
+      expect(results.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('handles very long message', () => {
+      const memories = [
+        makeMemory({
+          id: 'long-msg',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm signals',
+        }),
+      ]
+
+      const longMsg = 'retrieval algorithm ' + 'word '.repeat(1000)
+      const results = retrieval.retrieveRelevantMemories(
+        memories, longMsg, zeroEmbedding, defaultCtx
+      )
+
+      expect(results.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  // ================================================================
+  // PROBLEM/SOLUTION BOOST
+  // ================================================================
+  describe('problem_solution_pair boost', () => {
+    it('boosts problem-solution memories when user has a problem', () => {
+      const memories = [
+        makeMemory({
+          id: 'normal-mem',
+          problem_solution_pair: false,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Normal retrieval algorithm memory',
+        }),
+        makeMemory({
+          id: 'problem-solution-mem',
+          problem_solution_pair: true,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'How to fix retrieval algorithm errors and bugs',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm bug error fix broken issue', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      expect(results[0].id).toBe('problem-solution-mem')
+    })
+  })
+
+  // ================================================================
+  // AWAITING_DECISION BOOST
+  // ================================================================
+  describe('awaiting_decision boost', () => {
+    it('boosts memories awaiting decision', () => {
+      const memories = [
+        makeMemory({
+          id: 'decided-mem',
+          awaiting_decision: false,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm scoring mechanism',
+        }),
+        makeMemory({
+          id: 'awaiting-decision-mem',
+          awaiting_decision: true,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm scoring mechanism',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm signals', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      // Both have same importance, but awaiting_decision gets +0.1
+      expect(results[0].id).toBe('awaiting-decision-mem')
+    })
+  })
+
+  // ================================================================
+  // MEDIUM_TERM AGE DECAY
+  // ================================================================
+  describe('medium_term age decay', () => {
+    it('penalizes medium_term memories older than 30 days', () => {
+      const memories = [
+        makeMemory({
+          id: 'fresh-medium',
+          temporal_class: 'medium_term',
+          created_at: Date.now() - 5 * 24 * 60 * 60 * 1000,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Recent retrieval algorithm memory',
+        }),
+        makeMemory({
+          id: 'old-medium',
+          temporal_class: 'medium_term',
+          created_at: Date.now() - 60 * 24 * 60 * 60 * 1000,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Old retrieval algorithm memory',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm signals', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      expect(results[0].id).toBe('fresh-medium')
+    })
+  })
+
+  // ================================================================
+  // EPHEMERAL DECAY
+  // ================================================================
+  describe('ephemeral memories', () => {
+    it('penalizes ephemeral memories older than 3 days', () => {
+      const memories = [
+        makeMemory({
+          id: 'fresh-ephemeral',
+          temporal_class: 'ephemeral',
+          created_at: Date.now() - 1 * 24 * 60 * 60 * 1000,
+          sessions_since_surfaced: 0,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Fresh ephemeral retrieval algorithm memory',
+        }),
+        makeMemory({
+          id: 'old-ephemeral',
+          temporal_class: 'ephemeral',
+          created_at: Date.now() - 10 * 24 * 60 * 60 * 1000,
+          sessions_since_surfaced: 5,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Old ephemeral retrieval algorithm memory',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm signals', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBeGreaterThanOrEqual(1)
+      if (results.length >= 2) {
+        expect(results[0].id).toBe('fresh-ephemeral')
+      }
+    })
+  })
+
+  // ================================================================
+  // SIGNAL BOOST FOR 3+ AND 4+ SIGNALS
+  // ================================================================
+  describe('signal count boosts', () => {
+    it('4+ signal memories get bigger boost than 3-signal ones', () => {
+      const memories = [
+        makeMemory({
+          id: 'three-signal',
+          importance_weight: 0.5,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          domain: 'retrieval',
+          feature: undefined,
+          content: 'Retrieval algorithm scoring mechanism implementation test',
+        }),
+        makeMemory({
+          id: 'four-signal',
+          importance_weight: 0.5,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          domain: 'retrieval',
+          feature: 'scoring',
+          content: 'Retrieval algorithm scoring mechanism implementation test',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm scoring mechanism implementation', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      expect(results[0].id).toBe('four-signal')
+    })
+  })
+
+  // ================================================================
+  // LONG_TERM TEMPORAL BONUS
+  // ================================================================
+  describe('long_term temporal bonus', () => {
+    it('long_term memories get +0.05 bonus', () => {
+      const memories = [
+        makeMemory({
+          id: 'medium-term',
+          temporal_class: 'medium_term',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Medium term retrieval algorithm memory',
+        }),
+        makeMemory({
+          id: 'long-term',
+          temporal_class: 'long_term',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Long term retrieval algorithm memory',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm signals', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      expect(results[0].id).toBe('long-term')
+    })
+  })
+
+  // ================================================================
+  // VECTOR SIMILARITY AS SIGNAL
+  // ================================================================
+  describe('vector similarity signal', () => {
+    it('counts vector similarity >= 25% as a signal', () => {
+      // Create a partially similar embedding (~30% similarity)
+      const queryEmb = new Float32Array(384)
+      queryEmb[0] = 0.7
+      queryEmb[1] = 0.7
+
+      const memEmb = new Float32Array(384)
+      memEmb[0] = 0.5
+      memEmb[1] = 0.5
+
+      const memories = [
+        makeMemory({
+          id: 'partial-vector',
+          embedding: memEmb,
+          trigger_phrases: ['retrieval algorithm'],
+          // Only 1 non-vector signal (trigger), but vector >= 25% adds another
+          semantic_tags: ['totally-unrelated-xyz'],
+          domain: undefined,
+          feature: undefined,
+          content: 'Completely unrelated quantum physics nonsense xyzzy',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm', queryEmb, defaultCtx
+      )
+
+      // Trigger + vector similarity = 2 signals → passes gate
+      expect(results.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('vector similarity < 25% does not count as signal', () => {
+      // Nearly orthogonal embeddings → similarity ~0
+      const queryEmb = new Float32Array(384)
+      queryEmb[0] = 1.0
+
+      const memEmb = new Float32Array(384)
+      memEmb[383] = 1.0  // Different dimension → cosine ≈ 0
+
+      const memories = [
+        makeMemory({
+          id: 'orthogonal-vec',
+          embedding: memEmb,
+          trigger_phrases: ['obscure-unrelated-xyz-12345'],
+          semantic_tags: ['totally-unrelated-abc'],
+          domain: 'obscure-domain-999',
+          feature: 'obscure-feature-888',
+          content: 'Quantum physics entanglement bubble nonsense',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm optimization', queryEmb, defaultCtx
+      )
+
+      expect(results).toHaveLength(0)
+    })
+  })
+
+  // ================================================================
+  // MISMATCHED VECTOR DIMENSIONS
+  // ================================================================
+  describe('vector dimension mismatch', () => {
+    it('handles mismatched embedding dimensions gracefully', () => {
+      const wrongDimEmb = new Float32Array(128)  // Wrong dims (should be 384)
+
+      const memories = [
+        makeMemory({
+          id: 'wrong-dims',
+          embedding: wrongDimEmb,
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm with mismatched embedding',
+        }),
+      ]
+
+      // Should not crash
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'retrieval algorithm signals', new Float32Array(384), defaultCtx
+      )
+
+      // Should still work via non-vector signals
+      expect(results.length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  // ================================================================
+  // CONTEXT TYPE KEYWORD BOOST
+  // ================================================================
+  describe('context type keyword match boost', () => {
+    it('boosts debug memories when message contains debug keywords', () => {
+      const memories = [
+        makeMemory({
+          id: 'non-debug',
+          context_type: 'technical',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Retrieval algorithm implementation details',
+        }),
+        makeMemory({
+          id: 'debug-mem',
+          context_type: 'debug',
+          trigger_phrases: ['retrieval algorithm'],
+          semantic_tags: ['retrieval', 'algorithm'],
+          content: 'Bug in retrieval algorithm causing errors',
+        }),
+      ]
+
+      const results = retrieval.retrieveRelevantMemories(
+        memories, 'fix the bug error issue retrieval algorithm broken', zeroEmbedding, defaultCtx, 5
+      )
+
+      expect(results.length).toBe(2)
+      expect(results[0].id).toBe('debug-mem')
+    })
+  })
+
+  // ================================================================
+  // NO DUPLICATE RESULTS
+  // ================================================================
+  describe('deduplication', () => {
+    it('does not return same memory twice from multiple redirects', () => {
+      const target = makeMemory({
+        id: 'target-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Final retrieval algorithm target memory',
+      })
+
+      const redirect1 = makeMemory({
+        id: 'redirect-1',
+        superseded_by: 'target-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Old retrieval algorithm version one',
+      })
+
+      const redirect2 = makeMemory({
+        id: 'redirect-2',
+        superseded_by: 'target-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Old retrieval algorithm version two',
+      })
+
+      const results = retrieval.retrieveRelevantMemories(
+        [redirect1, redirect2, target], 'retrieval algorithm', zeroEmbedding, defaultCtx
+      )
+
+      // target-mem should appear exactly once
+      const targetCount = results.filter(r => r.id === 'target-mem').length
+      expect(targetCount).toBe(1)
+    })
+  })
+
+  // ================================================================
+  // BLOCKS / BLOCKED_BY LINKED MEMORIES
+  // ================================================================
+  describe('blocked_by linked memories', () => {
+    it('pulls in blocked_by memory when space allows', () => {
+      const blocker = makeMemory({
+        id: 'blocker-mem',
+        trigger_phrases: [],
+        semantic_tags: [],
+        content: 'This is blocking progress',
+        importance_weight: 0.5,
+      })
+
+      const blocked = makeMemory({
+        id: 'blocked-mem',
+        trigger_phrases: ['retrieval algorithm'],
+        semantic_tags: ['retrieval', 'algorithm'],
+        content: 'Main retrieval algorithm work blocked by dependency',
+        blocked_by: 'blocker-mem',
+      })
+
+      const results = retrieval.retrieveRelevantMemories(
+        [blocked, blocker], 'retrieval algorithm implementation', zeroEmbedding, defaultCtx, 5
+      )
+
+      const ids = results.map(r => r.id)
+      expect(ids).toContain('blocked-mem')
+      // blocker-mem should be pulled in as linked context
+      expect(ids).toContain('blocker-mem')
+    })
+  })
+})

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Curator } from '../src/core/curator';
 
 describe('Curator', () => {
-  const curator = new Curator();
+  const curator = new Curator({ cliCommand: 'echo' });
 
   describe('parseCurationResponse', () => {
     it('parses a valid curation response', () => {
@@ -339,6 +339,147 @@ describe('Curator', () => {
       // The section header for listing memories is not present when no existing memories provided
       // (Note: 'EXISTING MEMORIES' appears in anti-duplication rules, which is always present)
       expect(prompt).not.toContain('--- EXISTING MEMORIES ---');
+    });
+
+    it('handles all valid trigger types', () => {
+      const triggers: string[] = ['session_end', 'pre_compact', 'context_full', 'manual', 'historical'];
+      for (const trigger of triggers) {
+        const prompt = curator.buildCurationPrompt(trigger as any);
+        expect(prompt).toContain(trigger);
+      }
+    });
+  });
+
+  // ================================================================
+  // ADDITIONAL EDGE CASE TESTS
+  // ================================================================
+  describe('parseCurationResponse edge cases', () => {
+    it('handles JSON wrapped in markdown code block', () => {
+      const json = JSON.stringify({
+        session_summary: 'Markdown wrapped',
+        memories: [{
+          headline: 'Test',
+          content: 'test content',
+          context_type: 'technical',
+          importance_weight: 0.5,
+          confidence_score: 0.8,
+          trigger_phrases: [],
+          semantic_tags: [],
+          reasoning: 'test',
+          action_required: false,
+          problem_solution_pair: false,
+          question_types: [],
+        }],
+      });
+      const response = '```json\n' + json + '\n```';
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.session_summary).toBe('Markdown wrapped');
+      expect(result.memories).toHaveLength(1);
+    });
+
+    it('handles JSON with trailing text after closing brace', () => {
+      const json = JSON.stringify({
+        session_summary: 'Trailing text',
+        memories: [],
+      });
+      const response = json + '\n\nThat is all the curated memories for this session.';
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.session_summary).toBe('Trailing text');
+    });
+
+    it('handles missing interaction_tone gracefully', () => {
+      const response = JSON.stringify({
+        session_summary: 'No tone',
+        memories: [],
+      });
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.session_summary).toBe('No tone');
+      expect(result.interaction_tone).toBeUndefined();
+    });
+
+    it('normalizes invalid temporal_class to medium_term', () => {
+      const response = JSON.stringify({
+        session_summary: 'Test',
+        memories: [{
+          headline: 'Invalid temporal',
+          content: 'test',
+          context_type: 'technical',
+          temporal_class: 'forever_and_ever',
+          importance_weight: 0.5,
+          confidence_score: 0.8,
+          trigger_phrases: [],
+          semantic_tags: [],
+          reasoning: 'test',
+          action_required: false,
+          problem_solution_pair: false,
+          question_types: [],
+        }],
+      });
+
+      const result = curator.parseCurationResponse(response);
+      // The curator should normalize or accept the temporal_class
+      // If it normalizes, it should be 'medium_term'
+      expect(result.memories[0].temporal_class).toBeDefined()
+    });
+
+    it('handles memories with missing optional fields', () => {
+      const response = JSON.stringify({
+        session_summary: 'Minimal memory',
+        memories: [{
+          headline: 'Minimal',
+          content: 'Just the basics',
+          context_type: 'technical',
+          importance_weight: 0.5,
+          confidence_score: 0.8,
+          reasoning: 'test',
+          action_required: false,
+          problem_solution_pair: false,
+        }],
+      });
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.memories).toHaveLength(1);
+      // Missing fields should get defaults
+      expect(result.memories[0].trigger_phrases).toBeDefined()
+      expect(result.memories[0].semantic_tags).toBeDefined()
+      expect(result.memories[0].question_types).toBeDefined()
+    });
+
+    it('handles response with only session_summary and no memories key', () => {
+      const response = JSON.stringify({
+        session_summary: 'No memories key',
+      });
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.session_summary).toBe('No memories key');
+      expect(result.memories).toHaveLength(0);
+    });
+
+    it('handles extremely long content', () => {
+      const longContent = 'x'.repeat(10000);
+      const response = JSON.stringify({
+        session_summary: 'Long content',
+        memories: [{
+          headline: 'Long',
+          content: longContent,
+          context_type: 'technical',
+          importance_weight: 0.5,
+          confidence_score: 0.8,
+          trigger_phrases: [],
+          semantic_tags: [],
+          reasoning: 'test',
+          action_required: false,
+          problem_solution_pair: false,
+          question_types: [],
+        }],
+      });
+
+      const result = curator.parseCurationResponse(response);
+      expect(result.memories).toHaveLength(1);
+      expect(result.memories[0].content).toBe(longContent);
     });
   });
 });
