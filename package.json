@@ -46,8 +46,10 @@
     "@rlabs-inc/signals": "^1.0.0"
   },
   "devDependencies": {
+    "@vitest/ui": "^4.1.2",
+    "bun-types": "latest",
     "typescript": "^5.0.0",
-    "bun-types": "latest"
+    "vitest": "^4.1.2"
   },
   "keywords": [
     "memory",
