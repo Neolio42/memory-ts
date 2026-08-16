@@ -29,14 +29,14 @@
     "skills"
   ],
   "scripts": {
-    "build": "bun run build:esm && bun run build:cjs",
-    "build:esm": "bun build src/index.ts --outfile dist/index.mjs --target node --format esm && bun build src/server/index.ts --outfile dist/server/index.mjs --target node --format esm",
-    "build:cjs": "bun build src/index.ts --outfile dist/index.js --target node --format cjs && bun build src/server/index.ts --outfile dist/server/index.js --target node --format cjs",
+    "build": "infisical run -- bun run build:esm && bun run build:cjs",
+    "build:esm": "infisical run -- bun build src/index.ts --outfile dist/index.mjs --target node --format esm && bun build src/server/index.ts --outfile dist/server/index.mjs --target node --format esm",
+    "build:cjs": "infisical run -- bun build src/index.ts --outfile dist/index.js --target node --format cjs && bun build src/server/index.ts --outfile dist/server/index.js --target node --format cjs",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "dev": "bun --hot src/server/index.ts",
-    "start": "bun src/server/index.ts",
-    "cli": "bun src/cli/index.ts"
+    "test": "infisical run -- bun test",
+    "dev": "infisical run -- bun --hot src/server/index.ts",
+    "start": "infisical run -- bun src/server/index.ts",
+    "cli": "infisical run -- bun src/cli/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.12",

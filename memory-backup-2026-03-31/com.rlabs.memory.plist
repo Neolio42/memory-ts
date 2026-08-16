@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rlabs.memory</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ned/.bun/bin/bun</string>
+        <string>/Users/ned/Desktop/Projects/memory/src/cli/index.ts</string>
+        <string>serve</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ned/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/ned/.local/share/memory/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ned/.local/share/memory/server.log</string>
+</dict>
+</plist>
